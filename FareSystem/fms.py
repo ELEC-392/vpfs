@@ -22,7 +22,7 @@ from fare import Fare
 from team import Team
 from threading import Lock
 
-from fare import FareType
+from fare_types import FareType
 
 # Match state (protected by mutex)
 matchRunning = False          # True while an active match is in progress
@@ -44,8 +44,10 @@ points = [
     # Point(0, -4),
     # Point(-5, 0),
 ]
+# Seed fares use the first configured fare type
+default_fare_type = next(iter(FareType))
 for point in points:
-    fares.append(Fare(Point(0, 0), point, FareType.NORMAL))
+    fares.append(Fare(Point(0, 0), point, default_fare_type))
 
 # Registered teams participating in the match, keyed by team number.
 # teams: {int: Team} = {

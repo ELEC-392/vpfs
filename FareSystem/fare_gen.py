@@ -4,7 +4,7 @@ Spawn-point–biased fare generator.
 Purpose:
 - Pick two distinct spawn points and create a Fare between them.
 - Enforce distance bounds and avoid reusing endpoints already used by active fares.
-- Bias the fare type (NORMAL/SUBSIDIZED/SENIOR) using per-point probabilities.
+- Bias the fare type using per-point probabilities.
 - Nudge probabilities toward a target distribution so the active list stays balanced.
 
 Returns:
@@ -15,10 +15,11 @@ Returns:
 from attr import dataclass  # Uses the 'attrs' library's dataclass. stdlib alternative: from dataclasses import dataclass
 
 from utils import Point
-from fare import Fare, FareType
 import random
 
+from fare import Fare
 from fare_prob import FareProbability
+from fare_types import FareType, get_target_distribution
 
 @dataclass
 class SpawnPoint:
@@ -31,15 +32,23 @@ class SpawnPoint:
     biases: FareProbability
 
 
+def _fare_type_by_name(name: str) -> FareType:
+    return next((ft for ft in FareType if ft.name == name), next(iter(FareType)))
+
+
+# Convenience handles for the two documented fare types
+STANDARD = _fare_type_by_name("STANDARD")
+SPECIAL = _fare_type_by_name("SPECIAL")
+
+
 # Candidate spawn points and their type biases.
-# Example biases:
-# - (0,0) always SENIOR, (1,1) and (2,2) heavily SUBSIDIZED, others default mix.
 points: [SpawnPoint] = [
-    # This one always spawns seniors for reasons I guess
-    SpawnPoint(Point(0, 0), FareProbability(0, 0, 1)),
-    # These two are always subsidized
-    SpawnPoint(Point(1, 1), FareProbability(0, 1, 1)),
-    SpawnPoint(Point(2, 2), FareProbability(0, 1, 1)),
+    # Central point heavily biased to special fares
+    SpawnPoint(Point(0, 0), FareProbability({SPECIAL: 2.0, STANDARD: 0.2})),
+    # Nearby points with mild special bias
+    SpawnPoint(Point(1, 1), FareProbability({SPECIAL: 1.5})),
+    SpawnPoint(Point(2, 2), FareProbability({SPECIAL: 1.5})),
+    # Neutral/default distribution elsewhere
     SpawnPoint(Point(3, 3), FareProbability()),
     SpawnPoint(Point(4, 4), FareProbability()),
     SpawnPoint(Point(5, 5), FareProbability()),
@@ -58,13 +67,7 @@ DIST_MAX = 999
 # TODO: Find a way to link this to the one in FMS.py without a circular import
 TARGET_FARES = 5
 
-# Target composition of active fares (ratios across NORMAL/SUBSIDIZED/SENIOR).
-# We aim for roughly 1–2 special fares out of TARGET_FARES, remainder NORMAL.
-targetProbabilities = {
-    FareType.SUBSIDIZED: 1.5 / TARGET_FARES,
-    FareType.SENIOR: 1.5 / TARGET_FARES,
-}
-targetProbabilities[FareType.NORMAL] = 1 - sum(targetProbabilities.values())
+targetProbabilities = get_target_distribution()
 
 
 def generate_fare(existingFares: [Fare]) -> Fare or None:
@@ -85,11 +88,7 @@ def generate_fare(existingFares: [Fare]) -> Fare or None:
     # Collect endpoints from currently active fares to avoid reuse, and
     # track live counts of each fare type to compute balancing multipliers.
     existing = []
-    quantities: dict[FareType, float] = {
-        FareType.NORMAL: 0,
-        FareType.SUBSIDIZED: 0,
-        FareType.SENIOR: 0,
-    }
+    quantities: dict[FareType, float] = {fare_type: 0 for fare_type in FareType}
     active_fares: int = 0
     for fare in existingFares:
         if fare.isActive:

@@ -1,34 +1,26 @@
-from fare import FareType
-from typing import Self, Tuple
 import random
+from typing import Self
+
+from fare_types import FareType
+
 
 class FareProbability:
-    def __init__(self,
-                 # Default Probabilities, sums to 100%
-                 normal=0.75,
-                 subsidized=0.15,
-                 senior=0.1):
-
-        self._values : dict[FareType, float] = {
-                FareType.NORMAL: normal,
-                FareType.SUBSIDIZED: subsidized,
-                FareType.SENIOR: senior
-            }
+    def __init__(self, values: dict[FareType, float] | None = None):
+        # Default to a uniform distribution across configured fare types
+        self._values: dict[FareType, float] = {fare_type: 1.0 for fare_type in FareType}
+        if values:
+            for fare_type, weight in values.items():
+                self._values[fare_type] = float(weight)
 
     @staticmethod
     def merge(p1, p2):
-        return FareProbability(
-            p1._values[FareType.NORMAL] + p2._values[FareType.NORMAL],
-            p1._values[FareType.SUBSIDIZED] + p2._values[FareType.SUBSIDIZED],
-            p1._values[FareType.SENIOR] + p2._values[FareType.SENIOR],
-        )
+        return FareProbability({
+            fare_type: p1._values[fare_type] + p2._values[fare_type]
+            for fare_type in FareType
+        })
 
     def copy(self) -> Self:
-        return FareProbability(
-            self._values[FareType.NORMAL],
-            self._values[FareType.SUBSIDIZED],
-            self._values[FareType.SENIOR],
-        )
+        return FareProbability({fare_type: weight for fare_type, weight in self._values.items()})
 
     def __getitem__(self, key: FareType):
         return self._values[key]
@@ -52,18 +44,18 @@ class FareProbability:
         """
         types: [FareType] = []
         probs: [float] = []
-        sum = 0
+        total = 0
 
         # Create collections of keys/weights, also handle negatives here
         for key, value in self._values.items():
             types.append(key)
             prob = max(0.0, value)
             probs.append(prob)
-            sum += prob
+            total += prob
 
         # If the probabilities sum to zero, then don't roll
-        if sum == 0:
-            return FareType.NORMAL
+        if total == 0:
+            return next(iter(FareType))
 
         # Use weighted random function
         return random.choices(types, probs)[0]

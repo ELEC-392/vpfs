@@ -45,7 +45,7 @@ Open a terminal in the project root (the outer VPFS folder) and run the main scr
 4. Run the main VPFS server script:
 
     ```commandline
-    python VPFS/Router.py
+    python FareSystem/Router.py
     ````
 ### Testing if Server is Up
 
@@ -87,7 +87,7 @@ Now set the match number and duration above. If you just want to test how your v
 The duration input is provided in seconds, so a 5-minute test match would have a duration of 300.
 
 Click the "Apply" button to load the match config, and then the start button when you are ready to test.
-![Configuring Match 1 for 300 seconds](Readme Images/Match Config.png)
+![Configuring Match 1 for 300 seconds](ReadmeImages/match_config.png)
 
 ### Fare Information
 The dashboard provides you with quite a bit of information about the state of fares, since it's designed to help us make sure things are running smooth at competition.

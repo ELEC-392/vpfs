@@ -3,41 +3,14 @@ import random
 from utils import Point
 from team import Team
 import time
-from enum import Enum
-from params import (
-    BASE_FARE, 
-    DIST_FARE_NORMAL, 
-    DIST_FARE_SUBSIDIZED, 
-    REPUTATION_NORMAL, 
-    REPUTATION_SUBSIDIZED,
-    POSITION_TOLERANCE,
-    PICKUP_DURATION 
+from params import POSITION_TOLERANCE, PICKUP_DURATION
+from fare_types import (
+    FareType,
+    get_base_fare,
+    get_distance_fare,
+    get_load_time_multiplier,
+    get_reputation,
 )
-
-class FareType(Enum):
-    NORMAL = 0
-    SUBSIDIZED = 1
-    SENIOR = 2
-
-    def get_base_fare(self) -> float:
-        return BASE_FARE
-
-    def get_dist_fare(self) -> float:
-        if self is FareType.SUBSIDIZED:
-            return DIST_FARE_SUBSIDIZED
-        return DIST_FARE_NORMAL
-
-    def get_reputation(self) -> float:
-        if self is FareType.SUBSIDIZED:
-            return REPUTATION_SUBSIDIZED
-        elif self is FareType.SENIOR:
-            return REPUTATION_SUBSIDIZED
-        return REPUTATION_NORMAL
-
-    def get_load_time(self) -> float:
-        if self is FareType.SENIOR:
-            return PICKUP_DURATION * 2
-        return PICKUP_DURATION
 
 class Fare:
     def __init__(self, src : Point, dest: Point, fare_type: FareType):
@@ -64,14 +37,14 @@ class Fare:
         Compute the fare earned from delivering this ducky
         :return:
         """
-        return self.dist * self.type.get_dist_fare() + self.type.get_base_fare()
+        return self.dist * get_distance_fare(self.type) + get_base_fare(self.type)
 
     def compute_karma(self) -> float:
         """
         Compute the karma earned from delivering this ducky
         :return:
         """
-        return self.type.get_reputation()
+        return get_reputation(self.type)
 
     def claim_fare(self, idx: int, team: Team) -> str | None:
         """
@@ -161,7 +134,7 @@ class Fare:
                 self.inPosition = True
                 # If no timeout started, then start it
                 if self._phaseTimeout == -1:
-                    self._phaseTimeout = time.time() + self.type.get_load_time()
+                    self._phaseTimeout = time.time() + PICKUP_DURATION * get_load_time_multiplier(self.type)
                 # If timeout completed, then set picked up
                 elif self._phaseTimeout < time.time():
                     self.pickedUp = True
@@ -175,7 +148,7 @@ class Fare:
                 self.inPosition = True
                 # If no timeout started, then start it
                 if self._phaseTimeout == -1:
-                    self._phaseTimeout = time.time() + self.type.get_load_time()
+                    self._phaseTimeout = time.time() + PICKUP_DURATION * get_load_time_multiplier(self.type)
                 # If timeout completed, then set fare completed
                 elif self._phaseTimeout < time.time():
                     self.completed = True
