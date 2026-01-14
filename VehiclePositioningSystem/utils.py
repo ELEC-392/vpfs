@@ -1,5 +1,5 @@
 """
-Utilities for camera and AprilTag pose composition.
+Utilities for camera and ArUco tag pose composition.
 
 Overview:
 - refTags: known world/map/frame poses for reference tags (world-to-tag transforms).
