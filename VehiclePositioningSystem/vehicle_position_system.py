@@ -102,13 +102,13 @@ camera_intrinsics = (in_fx, in_fy, in_cx, in_cy)
 # Build OpenCV camera matrix from loaded intrinsics
 CAM_K = np.array([[in_fx, 0, in_cx], [0, in_fy, in_cy], [0, 0, 1]], dtype=np.float64)
 
-# Tag physical size in meters (8 cm)
-tag_size = 8 / 100
+# Tag physical size in meters (10 cm)
+tag_size = 10 / 100
 
 # --- ArUco setup ---
 aruco = cv2.aruco
 # Pick a dictionary that matches your printed markers
-ARUCO_DICT = aruco.getPredefinedDictionary(aruco.DICT_4X4_100)
+ARUCO_DICT = aruco.getPredefinedDictionary(aruco.DICT_6X6_250)
 ARUCO_PARAMS = aruco.DetectorParameters() if hasattr(aruco, "DetectorParameters") else aruco.DetectorParameters_create()
 DETECTOR = aruco.ArucoDetector(ARUCO_DICT, ARUCO_PARAMS) if hasattr(aruco, "ArucoDetector") else None
 
