@@ -21,6 +21,14 @@ from fare import Fare
 from fare_prob import FareProbability
 from fare_types import FareType, get_target_distribution
 
+from functools import lru_cache
+from pathlib import Path
+from typing import Dict
+import yaml
+
+
+CONFIG_PATH = Path(__file__).resolve().parents[1] / "Config" / "spawn_points.yaml"
+
 @dataclass
 class SpawnPoint:
     """
@@ -40,25 +48,50 @@ def _fare_type_by_name(name: str) -> FareType:
 STANDARD = _fare_type_by_name("STANDARD")
 SPECIAL = _fare_type_by_name("SPECIAL")
 
+@lru_cache(maxsize=1)
+def load_spawn_points_config() -> Dict[str, dict]:
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Missing spawn points config: {CONFIG_PATH}")
 
-# Candidate spawn points and their type biases.
-points: [SpawnPoint] = [
-    # Central point heavily biased to special fares
-    SpawnPoint(Point(0, 0), FareProbability({SPECIAL: 2.0, STANDARD: 0.2})),
-    # Nearby points with mild special bias
-    SpawnPoint(Point(1, 1), FareProbability({SPECIAL: 1.5})),
-    SpawnPoint(Point(2, 2), FareProbability({SPECIAL: 1.5})),
-    # Neutral/default distribution elsewhere
-    SpawnPoint(Point(3, 3), FareProbability()),
-    SpawnPoint(Point(4, 4), FareProbability()),
-    SpawnPoint(Point(5, 5), FareProbability()),
-    SpawnPoint(Point(6, 6), FareProbability()),
-    SpawnPoint(Point(7, 7), FareProbability()),
-    SpawnPoint(Point(8, 8), FareProbability()),
-    SpawnPoint(Point(9, 9), FareProbability()),
-    SpawnPoint(Point(10, 10), FareProbability()),
-    SpawnPoint(Point(11, 11), FareProbability()),
-]
+    with CONFIG_PATH.open("r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+
+    spawn_points = data.get("spawn_points")
+    if not isinstance(spawn_points, list) or not spawn_points:
+        raise ValueError("spawn_points.yaml must define a non-empty 'spawn_points' dict")
+
+    # Read the spawn points and their biases
+    normalized: Dict[str, dict] = {}
+    for spawn_point in spawn_points:
+        is_active = spawn_point.get("active", True)
+        if not is_active:
+            continue
+
+        name = spawn_point.get("name", "unnamed")
+        coordinates = spawn_point.get("coordinates", {})
+        fare_type_biases = spawn_point.get("fare_type_biases", {})
+
+        x = float(coordinates.get("x", 0.0))
+        y = float(coordinates.get("y", 0.0))
+
+        biases: Dict[FareType, float] = {}
+        for fare_type_name, weight in fare_type_biases.items():
+            fare_type = _fare_type_by_name(fare_type_name.upper())
+            biases[fare_type] = float(weight)
+
+        normalized[f"{name}"] = {
+            "point": Point(x, y),
+            "biases": FareProbability(biases),
+        }
+
+    return normalized
+
+spawn_points_config = load_spawn_points_config()
+
+# Candidate spawn points and their type biases based on config file
+points: [SpawnPoint] = []
+for cfg in spawn_points_config.values():
+    points.append(SpawnPoint(cfg["point"], cfg["biases"]))
 
 # Minimum and maximum allowed distance between spawn points
 DIST_MIN = 0.5

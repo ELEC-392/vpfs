@@ -1,0 +1,232 @@
+spawn_points:
+  - id: 1
+    name: "P1"
+    coordinates:
+      x: 50.0
+      y: 50.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 2
+    name: "P2"
+    coordinates:
+      x: 100.0
+      y: 75.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 3
+    name: "P3"
+    coordinates:
+      x: 150.0
+      y: 100.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 4
+    name: "P4"
+    coordinates:
+      x: 200.0
+      y: 125.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 5
+    name: "P5"
+    coordinates:
+      x: 250.0
+      y: 150.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 6
+    name: "P6"
+    coordinates:
+      x: 300.0
+      y: 175.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 7
+    name: "P7"
+    coordinates:
+      x: 350.0
+      y: 200.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 8
+    name: "P8"
+    coordinates:
+      x: 400.0
+      y: 225.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 9
+    name: "P9"
+    coordinates:
+      x: 450.0
+      y: 250.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 10
+    name: "P10"
+    coordinates:
+      x: 500.0
+      y: 275.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 11
+    name: "P11"
+    coordinates:
+      x: 50.0
+      y: 300.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 12
+    name: "P12"
+    coordinates:
+      x: 100.0
+      y: 325.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 13
+    name: "P13"
+    coordinates:
+      x: 150.0
+      y: 350.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 14
+    name: "P14"
+    coordinates:
+      x: 200.0
+      y: 375.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 15
+    name: "P15"
+    coordinates:
+      x: 250.0
+      y: 400.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 16
+    name: "P16"
+    coordinates:
+      x: 300.0
+      y: 425.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 17
+    name: "P17"
+    coordinates:
+      x: 350.0
+      y: 450.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 18
+    name: "P18"
+    coordinates:
+      x: 400.0
+      y: 475.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 19
+    name: "P19"
+    coordinates:
+      x: 450.0
+      y: 500.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 20
+    name: "P20"
+    coordinates:
+      x: 500.0
+      y: 50.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 21
+    name: "P21"
+    coordinates:
+      x: 75.0
+      y: 150.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 22
+    name: "P22"
+    coordinates:
+      x: 125.0
+      y: 275.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+  - id: 23
+    name: "P23"
+    coordinates:
+      x: 175.0
+      y: 425.0
+    active: true
+    fare_type_bias:
+      STANDARD: 0.3
+      SPECIAL: 0.7
+
+ 
