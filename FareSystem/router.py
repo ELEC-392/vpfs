@@ -8,9 +8,11 @@ HTTP and WebSocket API for VPFS.
 """
 
 import time
+from pathlib import Path
+import yaml
 
-from flask import Flask, jsonify, request
-from flask_socketio import SocketIO
+from flask import Flask, jsonify, request, render_template, send_from_directory
+from flask_socketio import SocketIO, emit
 from jsonschema.exceptions import ValidationError
 
 from utils import Point
@@ -19,9 +21,13 @@ from jsonschema import validate
 from threading import Thread
 from auth import authenticate
 from params import MODE, OperatingMode
+from team import Team
 
 # Create Flask app and Socket.IO wrapper
-app = Flask(__name__)
+# Configure template and static folders for map monitor
+app = Flask(__name__,
+            template_folder='../Dashboard/templates',
+            static_folder='../Dashboard/static')
 sock = SocketIO(app)
 
 # Optionally initialize lab-specific modules
@@ -35,6 +41,22 @@ if MODE == OperatingMode.LAB:
 def serve_root():
     """Health check endpoint."""
     return "VPFS is alive!\n"
+
+@app.route("/dashboard")
+def serve_map_monitor():
+    """Serve the map monitor interface."""
+    return render_template('dashboard.html')
+
+@app.route("/admin")
+def serve_admin():
+    """Serve the admin panel interface."""
+    return render_template('admin.html')
+
+@app.route('/assets/<path:filename>')
+def serve_assets(filename):
+    """Serve static assets (map and duck images)."""
+    assets_path = Path(__file__).parent.parent / 'Assets'
+    return send_from_directory(assets_path, filename)
 
 @app.route("/match")
 def serve_status():
@@ -83,6 +105,194 @@ def serve_teams():
                 "lastStatus": team.lastStatus
             })
     return jsonify(data)
+
+@app.route("/api/map/teams")
+def serve_map_teams():
+    """
+    Returns team configuration for map monitor.
+    Maps team numbers to duck colors.
+    """
+    # Duck color mapping (7 teams max)
+    duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png"]
+    
+    teams_data = []
+    with fms.mutex:
+        for idx, team in enumerate(sorted(fms.teams.values(), key=lambda t: t.number)):
+            teams_data.append({
+                "id": team.number,
+                "name": getattr(team, 'name', f"Team {team.number}"),
+                "duck": duck_colors[idx % len(duck_colors)]
+            })
+    return jsonify(teams_data)
+
+@app.route("/api/map/positions")
+def serve_map_positions():
+    """
+    Returns current normalized positions (0-1 range) for all teams.
+    """
+    positions = {}
+    with fms.mutex:
+        for team in fms.teams.values():
+            # Positions are already normalized in the system
+            positions[team.number] = {
+                "x": team.pos.x,
+                "y": team.pos.y
+            }
+    return jsonify(positions)
+
+@app.route("/api/admin/team-names")
+def serve_team_names():
+    """
+    Returns available team names from YAML file for autocomplete.
+    """
+    try:
+        yaml_path = Path(__file__).parent.parent / 'Config' / 'team_names.yaml'
+        with open(yaml_path, 'r') as f:
+            data = yaml.safe_load(f)
+            return jsonify(data.get('teams', []))
+    except Exception as e:
+        print(f"Error loading team names: {e}")
+        return jsonify([])
+
+@app.route("/api/admin/current-teams")
+def serve_current_teams():
+    """
+    Returns current teams with their names for admin panel.
+    """
+    teams_data = []
+    with fms.mutex:
+        for team in sorted(fms.teams.values(), key=lambda t: t.number):
+            teams_data.append({
+                "number": team.number,
+                "name": getattr(team, 'name', f"Team {team.number}"),
+                "money": team.money,
+                "rep": team.karma
+            })
+    return jsonify(teams_data)
+
+@app.route("/api/admin/configure-teams", methods=["POST"])
+def configure_teams():
+    """
+    Configure teams for the match.
+    Expects JSON: {"teams": [{"number": int, "name": str}, ...]}
+    """
+    if MODE != OperatingMode.LAB:
+        return jsonify({"success": False, "message": "Team configuration only allowed in LAB mode"}), 403
+    
+    try:
+        data = request.get_json()
+        teams = data.get('teams', [])
+        
+        if not teams:
+            return jsonify({"success": False, "message": "No teams provided"}), 400
+        
+        with fms.mutex:
+            # Clear existing teams
+            fms.teams.clear()
+            
+            # Add new teams
+            for team_data in teams:
+                team_number = team_data['number']
+                team_name = team_data['name']
+                
+                team = Team(team_number)
+                team.name = team_name  # Add name attribute
+                fms.teams[team_number] = team
+        
+        # Broadcast update to map monitor clients
+        duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png"]
+        with fms.mutex:
+            teams_data = []
+            positions = {}
+            for idx, team in enumerate(sorted(fms.teams.values(), key=lambda t: t.number)):
+                teams_data.append({
+                    "id": team.number,
+                    "name": getattr(team, 'name', f"Team {team.number}"),
+                    "duck": duck_colors[idx % len(duck_colors)]
+                })
+                positions[team.number] = {
+                    "x": team.pos.x,
+                    "y": team.pos.y
+                }
+        
+        sock.emit('initial_state', {
+            'teams': teams_data,
+            'positions': positions
+        })
+        
+        return jsonify({
+            "success": True,
+            "message": f"Successfully configured {len(teams)} team(s)",
+            "teams": len(teams)
+        })
+    
+    except Exception as e:
+        print(f"Error configuring teams: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route("/api/admin/clear-teams", methods=["POST"])
+def clear_teams():
+    """
+    Clear all teams from the match.
+    """
+    if MODE != OperatingMode.LAB:
+        return jsonify({"success": False, "message": "Team clearing only allowed in LAB mode"}), 403
+    
+    try:
+        with fms.mutex:
+            fms.teams.clear()
+        
+        # Broadcast update to map monitor
+        sock.emit('initial_state', {
+            'teams': [],
+            'positions': {}
+        })
+        
+        return jsonify({"success": True, "message": "All teams cleared"})
+    except Exception as e:
+        print(f"Error clearing teams: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route("/api/admin/remove-team/<int:team_number>", methods=["DELETE"])
+def remove_team(team_number):
+    """
+    Remove a specific team from the match.
+    """
+    if MODE != OperatingMode.LAB:
+        return jsonify({"success": False, "message": "Team removal only allowed in LAB mode"}), 403
+    
+    try:
+        with fms.mutex:
+            if team_number not in fms.teams:
+                return jsonify({"success": False, "message": f"Team {team_number} not found"}), 404
+            
+            del fms.teams[team_number]
+        
+        # Broadcast update to map monitor
+        duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png"]
+        with fms.mutex:
+            teams_data = []
+            positions = {}
+            for idx, team in enumerate(sorted(fms.teams.values(), key=lambda t: t.number)):
+                teams_data.append({
+                    "id": team.number,
+                    "name": getattr(team, 'name', f"Team {team.number}"),
+                    "duck": duck_colors[idx % len(duck_colors)]
+                })
+                positions[team.number] = {
+                    "x": team.pos.x,
+                    "y": team.pos.y
+                }
+        
+        sock.emit('initial_state', {
+            'teams': teams_data,
+            'positions': positions
+        })
+        
+        return jsonify({"success": True, "message": f"Team {team_number} removed"})
+    except Exception as e:
+        print(f"Error removing team: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
 
 def serve_fares(extended: bool, include_expired: bool):
     """
@@ -171,19 +381,42 @@ def current_fare(team: int):
 @app.route("/whereami/<int:team>")
 def whereami_get(team: int):
     """
-    Gets the last known position for a team number.
+    Gets the last known position for the authenticated team.
     Returns x/y coordinates and the last update timestamp.
+    Requires authentication - teams can only query their own position.
+    Query params:
+      - auth: team code or team number depending on mode
     """
+    # Authenticate the request
+    auth_code = request.args.get("auth", default="")
+    authenticated_team = authenticate(auth_code, MODE)
+    
+    # Check if authentication succeeded
+    if authenticated_team == -1:
+        return jsonify({
+            "position": None,
+            "last_update": 0,
+            "message": "Authentication failed"
+        }), 401
+    
+    # Check if authenticated team matches requested team
+    if authenticated_team != team:
+        return jsonify({
+            "position": None,
+            "last_update": 0,
+            "message": f"Access denied: Team {authenticated_team} cannot view Team {team}'s position"
+        }), 403
+    
     point = None
     last_update: int = 0
     message = ""
     if team in fms.teams.keys():
-        team = fms.teams[team]
+        team_obj = fms.teams[team]
         point = {
-            "x": team.pos.x,
-            "y": team.pos.y
+            "x": team_obj.pos.x,
+            "y": team_obj.pos.y
         }
-        last_update = team.lastPosUpdate
+        last_update = team_obj.lastPosUpdate
     else:
         message = f"Team {team} not in this match"
 
@@ -199,6 +432,30 @@ def whereami_get(team: int):
 def sock_connect(auth):
     """Logs when a Socket.IO client connects."""
     print("Connected")
+    
+    # Send initial state to map monitor clients
+    duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png"]
+    
+    # Gather data under mutex, then emit outside
+    with fms.mutex:
+        teams_data = []
+        positions = {}
+        for idx, team in enumerate(sorted(fms.teams.values(), key=lambda t: t.number)):
+            teams_data.append({
+                "id": team.number,
+                "name": getattr(team, 'name', f"Team {team.number}"),
+                "duck": duck_colors[idx % len(duck_colors)]
+            })
+            positions[team.number] = {
+                "x": team.pos.x,
+                "y": team.pos.y
+            }
+    
+    # Emit outside the mutex to avoid blocking
+    emit('initial_state', {
+        'teams': teams_data,
+        'positions': positions
+    })
 
 @sock.on("disconnect")
 def sock_disconnect():
@@ -236,6 +493,12 @@ def whereami_update(json):
             y = entry['y']
             if team in fms.teams.keys():
                 fms.teams[team].update_position(Point(x, y))
+                # Broadcast position update to map monitor clients
+                sock.emit('position_update', {
+                    'team_id': team,
+                    'x': x,
+                    'y': y
+                })
             else:
                 print(f"Team not in match {team}")
     except ValidationError as e:

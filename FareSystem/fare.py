@@ -13,15 +13,23 @@ from fare_types import (
 )
 
 class Fare:
-    def __init__(self, src : Point, dest: Point, fare_type: FareType):
+    def __init__(self, src : Point, dest: Point, fare_type: FareType, match_num: int = 0, sequence: int = 0):
         """
         :param src: Location the ducky is picked up at
         :param dest: Location the ducky is delivered to
+        :param fare_type: Type of fare (STANDARD, SPECIAL, etc.)
+        :param match_num: Match number for unique ID generation
+        :param sequence: Sequence number within the match for unique ID
         """
         self.src = src
         self.dest = dest
         self.dist = src.dist(dest)
         self.type = fare_type
+        
+        # Generate unique ID: match_num * 1000 + sequence
+        # This allows up to 999 fares per match with globally unique IDs
+        self.unique_id = match_num * 1000 + sequence
+        
         self.expiry = time.time() + random.randint(60, 150)
         self.team : int | None = None
         # Timeout used to create pickup/dropoff delay
@@ -79,7 +87,8 @@ class Fare:
 
     def to_json_dict(self, idx: int, extended: bool):
         data = {
-            "id": idx,
+            "id": idx,  # Keep for backwards compatibility with list index
+            "unique_id": self.unique_id,  # Globally unique ID for database
             "modifiers": self.type.value,
             "src": {
                 "x": self.src.x,

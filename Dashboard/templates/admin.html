@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VPFS - Admin Panel</title>
+    <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>⚙️ VPFS Admin Panel</h1>
+            <nav>
+                <a href="/map" class="nav-link">📍 View Map</a>
+                <a href="/" class="nav-link">🏠 Home</a>
+            </nav>
+        </header>
+
+        <div class="main-content">
+            <!-- Team Configuration Section -->
+            <section class="config-section">
+                <h2>Team Configuration</h2>
+                
+                <!-- Number of Teams Selector -->
+                <div class="team-count-selector">
+                    <label for="team-count">Number of Teams:</label>
+                    <div class="number-buttons">
+                        <button class="num-btn" data-count="1">1</button>
+                        <button class="num-btn" data-count="2">2</button>
+                        <button class="num-btn" data-count="3">3</button>
+                        <button class="num-btn" data-count="4">4</button>
+                        <button class="num-btn" data-count="5">5</button>
+                        <button class="num-btn" data-count="6">6</button>
+                        <button class="num-btn" data-count="7">7</button>
+                    </div>
+                </div>
+
+                <!-- Team Setup Grid -->
+                <div id="teams-grid" class="teams-grid">
+                    <!-- Teams will be dynamically added here -->
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="action-buttons">
+                    <button id="save-btn" class="btn btn-primary">💾 Save Configuration</button>
+                    <button id="clear-btn" class="btn btn-secondary">🗑️ Clear All Teams</button>
+                </div>
+
+                <!-- Status Message -->
+                <div id="status-message" class="status-message"></div>
+            </section>
+
+            <!-- Current Teams Section -->
+            <aside class="current-teams-section">
+                <h2>Active Teams</h2>
+                <div id="active-teams-list" class="active-teams-list">
+                    <p class="empty-message">No teams configured</p>
+                </div>
+                
+                <div class="stats">
+                    <h3>System Info</h3>
+                    <div class="stat-item">
+                        <span>Mode:</span>
+                        <span id="system-mode">Loading...</span>
+                    </div>
+                    <div class="stat-item">
+                        <span>Teams Registered:</span>
+                        <span id="teams-registered">0</span>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <!-- Autocomplete Datalist -->
+    <datalist id="team-names-datalist">
+        <!-- Will be populated from YAML -->
+    </datalist>
+
+    <script src="/static/admin.js"></script>
+</body>
+</html>

@@ -15,6 +15,7 @@ Threading:
 """
 
 import time
+import random
 
 from fare_gen import generate_fare
 from utils import Point
@@ -64,10 +65,13 @@ teams: dict[int, Team] = {}
 # teams: dict[int, Team] = {3: Team(3), 5: Team(5), 7: Team(7), 10: Team(10)} if MODE is OperatingMode.LAB else {}
 
 # Desired number of concurrently active fares displayed/managed by the system.
-TARGET_FARES = 5
+TARGET_FARES = 8
 
 # Cooldown timestamp used to stagger fare generation (prevents bursts).
 genCooldown = 0
+
+# Fare sequence counter for unique ID generation (resets each match)
+fareSequence = 0
 
 
 def do_generation() -> bool:
@@ -105,7 +109,7 @@ def periodic():
     - Spawns new fares when allowed by do_generation().
     Runs forever; intended to execute on a dedicated background thread.
     """
-    global fares
+    global fares, fareSequence
     while True:
         with mutex:
             # Update fare statuses
@@ -114,10 +118,11 @@ def periodic():
 
             # Generate a new fare if needed
             if do_generation():
-                fare = generate_fare(fares)
+                fare = generate_fare(fares, matchNum, fareSequence)
                 if fare is not None:
                     fares.append(fare)
-                    print("New Fare")
+                    fareSequence += 1
+                    print(f"New Fare (ID: {fare.unique_id})")
                 else:
                     print("Failed faregen")
 
@@ -148,11 +153,22 @@ def start_match():
     """
     Start the configured match.
     Sets matchEndTime = now + matchDuration and marks matchRunning True.
+    Seeds the random number generator with matchNum to ensure reproducible fares.
+    Resets fare sequence counter for unique ID generation.
     No-op if already running.
     """
-    global matchEndTime, matchRunning
+    global matchEndTime, matchRunning, fareSequence
     with mutex:
         if not matchRunning:
+            # Seed random generator with match number for reproducible fare generation
+            # All teams playing the same match number will get identical fares
+            random.seed(matchNum)
+            
+            # Reset fare sequence counter for this match
+            fareSequence = 0
+            
+            print(f"Match {matchNum} started with seed={matchNum}")
+            
             matchEndTime = time.time() + matchDuration
             matchRunning = True
 

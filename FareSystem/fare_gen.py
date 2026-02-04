@@ -98,19 +98,22 @@ DIST_MIN = 0.5
 DIST_MAX = 999
 
 # TODO: Find a way to link this to the one in FMS.py without a circular import
-TARGET_FARES = 5
+TARGET_FARES = 8
 
 targetProbabilities = get_target_distribution()
 
 
-def generate_fare(existingFares: [Fare]) -> Fare or None:
+def generate_fare(existingFares: [Fare], match_num: int = 0, sequence: int = 0) -> Fare or None:
     """
     Try to generate a new fare that:
     - Uses two distinct spawn points not currently occupied by active fares.
     - Falls within distance bounds [DIST_MIN, DIST_MAX].
     - Selects a FareType by merging endpoint biases and reweighting toward targets.
+    - Has a unique ID based on match number and sequence.
 
     :param existingFares: Current fare list (active and inactive).
+    :param match_num: Current match number for unique ID generation.
+    :param sequence: Sequence number within the match for unique ID.
     :return: A new Fare or None if generation failed after several attempts.
     """
 
@@ -177,8 +180,8 @@ def generate_fare(existingFares: [Fare]) -> Fare or None:
         # Sample a FareType from the reweighted distribution
         fare_type = prob.roll()
 
-        # Build the new Fare
-        return Fare(p1.point, p2.point, fare_type)
+        # Build the new Fare with unique ID
+        return Fare(p1.point, p2.point, fare_type, match_num, sequence)
 
     # No valid pairing found in allotted attempts
     return None
