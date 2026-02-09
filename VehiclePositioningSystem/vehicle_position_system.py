@@ -24,11 +24,68 @@ import os
 import json
 
 import utils
+import platform
 
-# Camera settings for Desktop mode (Windows/DirectShow path)
-camera_id = 0
+# ============================================================================
+# Camera Configuration
+# ============================================================================
+# List of camera device paths to search (in priority order)
+# These should match your udev symlinks or direct /dev/video* paths
+# The script will use the first available camera from this list
+CAMERA_DEVICES = [
+    '/dev/brio-video',      # Logitech BRIO (udev symlink from 99-brio-camera.rules)
+    # Add more cameras here as needed, e.g.:
+    # '/dev/overhead-camera',
+    # '/dev/side-camera',
+    # '/dev/video2',        # Direct device path fallback
+]
+
+# Camera settings for Desktop mode
+camera_id = 0  # Default fallback (Windows or if no device found)
 camera_width = 4096
 camera_height = 2160
+
+def find_camera(device_list=None, search_model=None):
+    """
+    Find camera device on Linux.
+    
+    Args:
+        device_list: List of device paths to check (default: CAMERA_DEVICES)
+        search_model: Optional model name to search for if device_list fails (e.g., 'Logitech BRIO')
+    
+    Returns:
+        Device path string (e.g., '/dev/brio-video' or '/dev/video2') or None
+    """
+    if device_list is None:
+        device_list = CAMERA_DEVICES
+    
+    # First, check for devices in priority order
+    for device in device_list:
+        if os.path.exists(device):
+            try:
+                # Verify it's a valid video capture device
+                result = os.popen(f'udevadm info {device} 2>/dev/null | grep "ID_V4L_CAPABILITIES"').read()
+                if ':capture:' in result or result == '':  # Empty result means it might still work
+                    print(f"Found camera at {device}")
+                    return device
+            except:
+                continue
+    
+    # Fallback: search /dev/video* for specific model if specified
+    if search_model:
+        for i in range(20):  # Check up to video19
+            device = f'/dev/video{i}'
+            if not os.path.exists(device):
+                continue
+            try:
+                result = os.popen(f'udevadm info {device} 2>/dev/null | grep -E "ID_V4L_PRODUCT|ID_V4L_CAPABILITIES"').read()
+                if search_model in result and ':capture:' in result:
+                    print(f"Found {search_model} at {device}")
+                    return device
+            except:
+                continue
+    
+    return None
 
 # Fallback intrinsics (Logitech Brio 4K): fx, fy, cx, cy
 FALLBACK_INTRINSICS = (978.56, 973.73, 825.30, 467.65)
@@ -102,13 +159,13 @@ camera_intrinsics = (in_fx, in_fy, in_cx, in_cy)
 # Build OpenCV camera matrix from loaded intrinsics
 CAM_K = np.array([[in_fx, 0, in_cx], [0, in_fy, in_cy], [0, 0, 1]], dtype=np.float64)
 
-# Tag physical size in meters (8 cm)
-tag_size = 8 / 100
+# Tag physical size in meters (10 cm)
+tag_size = 10 / 100
 
 # --- ArUco setup ---
 aruco = cv2.aruco
 # Pick a dictionary that matches your printed markers
-ARUCO_DICT = aruco.getPredefinedDictionary(aruco.DICT_4X4_100)
+ARUCO_DICT = aruco.getPredefinedDictionary(aruco.DICT_6X6_100)
 ARUCO_PARAMS = aruco.DetectorParameters() if hasattr(aruco, "DetectorParameters") else aruco.DetectorParameters_create()
 DETECTOR = aruco.ArucoDetector(ARUCO_DICT, ARUCO_PARAMS) if hasattr(aruco, "ArucoDetector") else None
 
@@ -124,8 +181,9 @@ pipeline = ' ! '.join([
 ])
 max_fps = "5/1"
 
-# Toggle Jetson mode by including "jetson" in CLI args; otherwise use Windows desktop path
+# Toggle Jetson mode by including "jetson" in CLI args; otherwise use platform-appropriate backend
 jetson = "jetson" in sys.argv
+is_windows = platform.system() == "Windows"
 
 if jetson:
     print(pipeline)
@@ -135,12 +193,53 @@ if jetson:
     os.system("v4l2-ctl -d /dev/video0 -C focus_absolute")
     cam = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
 else:
-    cam = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
-    cam.open(camera_id + cv2.CAP_MSMF)
-    cam.set(cv2.CAP_PROP_FRAME_WIDTH, camera_width)
-    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_height)
+    # Auto-detect camera on Linux
+    camera_device = camera_id
+    if not is_windows:
+        detected = find_camera(search_model='Logitech BRIO')  # Fallback model search
+        if detected:
+            camera_device = detected
+        else:
+            print(f"No configured camera found, using default camera_id={camera_id}")
+    
+    if is_windows:
+        cam = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+        cam.set(cv2.CAP_PROP_FRAME_WIDTH, camera_width)
+        cam.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_height)
+        cam.open(camera_id + cv2.CAP_MSMF)
+    else:
+        # On Linux, reset camera to known state using v4l2-ctl before opening
+        if not is_windows and isinstance(camera_device, str) and camera_device.startswith('/dev/'):
+            print(f"Initializing camera {camera_device}...")
+            # Reset to defaults first
+            os.system(f"v4l2-ctl -d {camera_device} -c focus_automatic_continuous=0 2>/dev/null")
+            os.system(f"v4l2-ctl -d {camera_device} -c focus_absolute=0 2>/dev/null")
+            os.system(f"v4l2-ctl -d {camera_device} -c auto_exposure=1 2>/dev/null")
+            os.system(f"v4l2-ctl -d {camera_device} -c exposure_time_absolute=200 2>/dev/null")
+            os.system(f"v4l2-ctl -d {camera_device} -c brightness=128 2>/dev/null")
+        
+        # On Linux, create camera and set format before opening
+        cam = cv2.VideoCapture()
+        cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+        cam.set(cv2.CAP_PROP_FRAME_WIDTH, camera_width)
+        cam.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_height)
+        cam.open(camera_device, cv2.CAP_V4L2)
+        
+        # Verify and reapply if needed
+        actual_w = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_h = int(cam.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if actual_w != camera_width or actual_h != camera_height:
+            print(f"First attempt: {actual_w}x{actual_h}, retrying with settings...")
+            cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+            cam.set(cv2.CAP_PROP_FRAME_WIDTH, camera_width)
+            cam.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_height)
+        
+        # Camera control settings (applied via OpenCV as backup)
+        cam.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # Disable autofocus
+        cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Manual exposure mode
+        cam.set(cv2.CAP_PROP_EXPOSURE, 85)  # Set exposure
+    
     max_fps = int(cam.get(cv2.CAP_PROP_FPS))
-    cam.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # Avoid AF hunting
 
 # Log actual capture format
 frameWidth = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -148,14 +247,27 @@ frameHeight = int(cam.get(cv2.CAP_PROP_FRAME_HEIGHT))
 print(frameWidth, 'x', frameHeight, '@', max_fps)
 print(int(cam.get(cv2.CAP_PROP_FOURCC)).to_bytes(4, byteorder=sys.byteorder).decode())
 
+# Log exposure settings
+exposure_value = cam.get(cv2.CAP_PROP_EXPOSURE)
+print(f"Exposure: {exposure_value}")
+
 # Overlay helpers
 font = cv2.FONT_HERSHEY_PLAIN
 def draw_aruco_overlays(img, corners, ids, rvecs=None, tvecs=None):
     if corners is not None and len(corners) > 0:
-        aruco.drawDetectedMarkers(img, corners, ids)
-        if rvecs is not None and tvecs is not None:
+        cv2.aruco.drawDetectedMarkers(img, corners, ids)
+        if rvecs is not None and tvecs is not None and len(rvecs) > 0:
             for rvec, tvec in zip(rvecs, tvecs):
-                cv2.drawFrameAxes(img, CAM_K, CAM_D, rvec, tvec, tag_size)
+                cv2.drawFrameAxes(img, CAM_K, CAM_D, rvec, tvec, tag_size * 0.5)
+        # Add text with relative position and between parenthesis the euclidean distance
+        for i, corner in enumerate(corners):
+            c = corner[0]
+            center_x = int(c[:, 0].mean())
+            center_y = int(c[:, 1].mean())
+            if rvecs is not None and tvecs is not None and i < len(tvecs):
+                tvec = tvecs[i]
+                text = f"X:{tvec[0][0]*100:.1f}cm Y:{tvec[1][0]*100:.1f}cm Z:{tvec[2][0]*100:.1f}cm ({np.linalg.norm(tvec)*100:.1f}cm)"
+                cv2.putText(img, text, (center_x - 100, center_y - 40), font, 3, (255, 255, 0), 3, cv2.LINE_AA)
     return img
 
 # Adapter to match utils.compute_camera_pos expected detection interface
@@ -179,6 +291,7 @@ if not cam.isOpened():
     sys.exit(1)
 
 lastTime = time.time()
+
 while True:
     ret, frame = cam.read()
     if not ret:
@@ -196,9 +309,23 @@ while True:
     rvecs, tvecs = None, None
     detections = []
     if ids is not None and len(ids) > 0:
-        # Pose estimation for each marker
-        # corners shape: (N,1,4,2). estimatePoseSingleMarkers returns (N,1,3) arrays.
-        rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(corners, tag_size, CAM_K, CAM_D)
+        # Pose estimation for each marker using cv2.solvePnP (OpenCV 4.x method)
+        # Set up marker coordinate system (centered, Z pointing out)
+        objPoints = np.array([[-tag_size/2, tag_size/2, 0],
+                               [tag_size/2, tag_size/2, 0],
+                               [tag_size/2, -tag_size/2, 0],
+                               [-tag_size/2, -tag_size/2, 0]], dtype=np.float32)
+        
+        rvecs = []
+        tvecs = []
+        
+        # Calculate pose for each marker
+        for corner in corners:
+            success, rvec, tvec = cv2.solvePnP(objPoints, corner, CAM_K, CAM_D, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+            if success:
+                rvecs.append(rvec)
+                tvecs.append(tvec)
+        
         # Build adapter objects to feed into utils
         for i, tag_id in enumerate(ids.flatten()):
             detections.append(
@@ -215,6 +342,7 @@ while True:
 
     # Estimate camera pose from known reference tags (fused if multiple)
     cameraPos = utils.compute_camera_pos(detections)
+    print(f"Camera Position: {cameraPos}" if cameraPos is not None else "Camera Position: Unknown")
 
     # If we have a valid camera pose, transform all detected tags to map/world coords
     tagPoses = {}

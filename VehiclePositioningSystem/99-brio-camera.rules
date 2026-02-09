@@ -1,0 +1,8 @@
+# Udev rule to create a persistent symlink for Logitech BRIO camera
+# Install with: sudo cp 99-brio-camera.rules /etc/udev/rules.d/
+# Then reload: sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# This creates /dev/brio-video when the BRIO is connected
+
+# Match BRIO camera with video capture capability and create symlink
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", ENV{ID_V4L_CAPABILITIES}=="*:capture:*", SYMLINK+="brio-video"
