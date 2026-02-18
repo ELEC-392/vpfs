@@ -79,7 +79,7 @@ def main(argv=None, camera_id=0):
     # Camera control settings (applied via OpenCV as backup)
     cam.set(cv2.CAP_PROP_AUTOFOCUS, 0)      # Disable autofocus
     cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Manual exposure mode
-    cam.set(cv2.CAP_PROP_EXPOSURE, 85)      # Set exposure
+    cam.set(cv2.CAP_PROP_EXPOSURE, 185)     # Set exposure
 
     max_fps = int(cam.get(cv2.CAP_PROP_FPS))
 
@@ -170,7 +170,7 @@ def main(argv=None, camera_id=0):
             cv2.putText(frame, f"{tag}: X{tagPoses[tag][0]:.2f} Y{tagPoses[tag][1]:.2f} Z{tagPoses[tag][2]:.2f}", (0, frameHeight + i), font, 3, (255, 0, 255), 2, cv2.LINE_AA)
             i -= 50
 
-        cv2.imshow('frame', cv2.resize(frame, (Defaults.CAM_WIDTH//2, Defaults.CAM_HEIGHT//2)))
+        cv2.imshow('frame', cv2.resize(frame, (Defaults.CAM_WIDTH//4, Defaults.CAM_HEIGHT//4)))
         if cv2.waitKey(1) & 0xFF == 27:  # ESC to quit
             break
 
