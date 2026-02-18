@@ -34,6 +34,22 @@ from utils import (
     compute_tag_poses
 )
 
+# Check for CUDA/GPU support
+USE_GPU = True
+try:
+    if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+        USE_GPU = True
+        print(f"GPU detected! CUDA-enabled devices: {cv2.cuda.getCudaEnabledDeviceCount()}")
+        print(f"Using GPU acceleration for image processing")
+except:
+    print("GPU/CUDA not available, using CPU only")
+
+# Pre-compute marker coordinate system (saves computation per frame)
+OBJ_POINTS = np.array([[-Defaults.TAG_SIZE/2,  Defaults.TAG_SIZE/2, 0],
+                       [Defaults.TAG_SIZE/2,   Defaults.TAG_SIZE/2, 0],
+                       [Defaults.TAG_SIZE/2,  -Defaults.TAG_SIZE/2, 0],
+                       [-Defaults.TAG_SIZE/2, -Defaults.TAG_SIZE/2, 0]], dtype=np.float32)
+
 
 def initialize_camera(camera_id, CAM_K, CAM_D):
     """Initialize a single camera with proper settings."""
@@ -87,9 +103,15 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
     return cam
 
 
-def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS):
+def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, gpu_frame=None, gpu_gray=None):
     """Process a single frame from one camera for ArUco detection."""
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # GPU-accelerated grayscale conversion if available
+    if USE_GPU and gpu_frame is not None and gpu_gray is not None:
+        gpu_frame.upload(frame)
+        cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_BGR2GRAY, gpu_gray)
+        gray = gpu_gray.download()
+    else:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
     # Detect ArUco markers
     if DETECTOR is not None:
@@ -100,19 +122,14 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     rvecs, tvecs = None, None
     detections = []
     if ids is not None and len(ids) > 0:
-        # Pose estimation for each marker using cv2.solvePnP (OpenCV 4.x method)
-        # Set up marker coordinate system (centered, Z pointing out)
-        objPoints = np.array([[-Defaults.TAG_SIZE/2,  Defaults.TAG_SIZE/2, 0],
-                              [Defaults.TAG_SIZE/2,   Defaults.TAG_SIZE/2, 0],
-                              [Defaults.TAG_SIZE/2,  -Defaults.TAG_SIZE/2, 0],
-                              [-Defaults.TAG_SIZE/2, -Defaults.TAG_SIZE/2, 0]], dtype=np.float32)
-        
+        # Pose estimation for each marker using cv2.solvePnP
+        # Use pre-computed objPoints to avoid re-allocation
         rvecs = []
         tvecs = []
         
         # Calculate pose for each marker
         for corner in corners:
-            success, rvec, tvec = cv2.solvePnP(objPoints, corner, CAM_K, CAM_D, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+            success, rvec, tvec = cv2.solvePnP(OBJ_POINTS, corner, CAM_K, CAM_D, flags=cv2.SOLVEPNP_IPPE_SQUARE)
             if success:
                 rvecs.append(rvec)
                 tvecs.append(tvec)
@@ -142,7 +159,7 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     
     return frame, detections, cameraPos
 
-def capture_and_process_camera(cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, frame_time):
+def capture_and_process_camera(cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, frame_time, gpu_frame=None, gpu_gray=None):
     """Worker function to capture and process a single camera frame in parallel."""
     ret, frame = cam_info["cap"].read()
     
@@ -156,7 +173,8 @@ def capture_and_process_camera(cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARU
     # Process frame for ArUco detection
     frame, detections, cameraPos = process_camera_frame(
         frame, cam_info["id"], cam_info["name"], 
-        CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS
+        CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
+        gpu_frame, gpu_gray
     )
     
     # Calculate FPS per camera
@@ -214,6 +232,19 @@ def main(argv=None):
     print(f"\nInitialized {len(cameras)} cameras. Press ESC to quit.\n")
     print("Using multi-threaded processing for improved FPS...\n")
     
+    # Pre-allocate GPU memory for each camera if GPU is available
+    gpu_resources = []
+    if USE_GPU:
+        for _ in cameras:
+            try:
+                gpu_frame = cv2.cuda_GpuMat(Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, cv2.CV_8UC3)
+                gpu_gray = cv2.cuda_GpuMat(Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, cv2.CV_8UC1)
+                gpu_resources.append((gpu_frame, gpu_gray))
+            except:
+                gpu_resources.append((None, None))
+    else:
+        gpu_resources = [(None, None)] * len(cameras)
+    
     # Main loop
     frame_times = [time.time()] * len(cameras)
     
@@ -223,10 +254,11 @@ def main(argv=None):
             # Submit all camera capture/process tasks in parallel
             futures = []
             for idx, cam_info in enumerate(cameras):
+                gpu_frame, gpu_gray = gpu_resources[idx]
                 future = executor.submit(
                     capture_and_process_camera,
                     cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
-                    frame_times[idx]
+                    frame_times[idx], gpu_frame, gpu_gray
                 )
                 futures.append((future, idx))
             
@@ -255,8 +287,11 @@ def main(argv=None):
             # Display each camera in its own window
             for idx, (frame, cam_info) in enumerate(zip(frames, cameras)):
                 # Resize to fit on screen (adjust scale as needed)
+                # Use INTER_NEAREST for faster resize (less quality but much faster)
                 scale = 0.25  # Adjust this to make windows larger/smaller
-                resized = cv2.resize(frame, None, fx=scale, fy=scale)
+                new_width = int(frame.shape[1] * scale)
+                new_height = int(frame.shape[0] * scale)
+                resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
                 
                 # Show in separate window for each camera
                 cv2.imshow(cam_info["name"], resized)
