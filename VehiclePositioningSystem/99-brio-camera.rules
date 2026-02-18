@@ -1,8 +1,12 @@
-# Udev rule to create a persistent symlink for Logitech BRIO camera
+# Udev rules for three Logitech BRIO cameras
 # Install with: sudo cp 99-brio-camera.rules /etc/udev/rules.d/
 # Then reload: sudo udevadm control --reload-rules && sudo udevadm trigger
-#
-# This creates /dev/brio-video when the BRIO is connected
 
-# Match BRIO camera with video capture capability and create symlink
-SUBSYSTEM=="video4linux", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", ENV{ID_V4L_CAPABILITIES}=="*:capture:*", SYMLINK+="brio-video"
+# Camera 1 - USB port 4-1 (main color camera /dev/video0)
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", KERNELS=="4-1*", ATTR{index}=="0", SYMLINK+="brio-camera1", MODE="0666", GROUP="video"
+
+# Camera 2 - USB port 4-2 (main color camera /dev/video6)
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", KERNELS=="4-2*", ATTR{index}=="0", SYMLINK+="brio-camera2", MODE="0666", GROUP="video"
+
+# Camera 3 - USB port 1-4 (main color camera /dev/video4)
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", KERNELS=="1-4*", ATTR{index}=="0", SYMLINK+="brio-camera3", MODE="0666", GROUP="video"

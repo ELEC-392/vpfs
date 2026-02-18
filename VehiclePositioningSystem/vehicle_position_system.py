@@ -354,7 +354,7 @@ while True:
     frameTime = time.time() - lastTime
     fps = 1 / frameTime if frameTime > 0 else 0.0
     lastTime = time.time()
-    cv2.putText(frame, f"{frameWidth}x{frameHeight} @ {fps:.2f} fps", (0, frameHeight - 10), font, 3, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(frame, f"{frameWidth}x{frameHeight} @ {fps:.2f} fps", (0, frameHeight - 10), font, 10, (255, 255, 255), 5, cv2.LINE_AA)
 
     # Display per-tag map-frame coordinates
     i = -100
