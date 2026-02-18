@@ -195,27 +195,14 @@ def main():
             
             frames.append(frame)
         
-        # Resize frames for display (if needed)
-        display_frames = []
-        for frame in frames:
+        # Display each camera in its own window
+        for idx, (frame, cam_info) in enumerate(zip(frames, cameras)):
             # Resize to fit on screen (adjust as needed)
             scale = 0.4  # Adjust this to make windows larger/smaller
             resized = cv2.resize(frame, None, fx=scale, fy=scale)
-            display_frames.append(resized)
-        
-        # Arrange frames in a grid
-        if len(display_frames) >= 3:
-            # Horizontal layout for 3 cameras
-            combined = np.hstack(display_frames[:3])
-        elif len(display_frames) == 2:
-            combined = np.hstack(display_frames)
-        elif len(display_frames) == 1:
-            combined = display_frames[0]
-        else:
-            combined = np.zeros((480, 640, 3), dtype=np.uint8)
-        
-        # Display combined view
-        cv2.imshow("Multi-Camera View", combined)
+            
+            # Show in separate window for each camera
+            cv2.imshow(cam_info["name"], resized)
         
         # Handle keyboard input
         key = cv2.waitKey(1) & 0xFF
