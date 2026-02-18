@@ -1,0 +1,13 @@
+{
+    "camera_matrix": [
+      [1000.0, 0.0, 960.0],
+      [0.0, 1000.0, 540.0],
+      [0.0, 0.0, 1.0]
+    ],
+    "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0],
+    "image_width": 1920,
+    "image_height": 1080,
+    "calibration_date": "2024-02-18",
+    "camera_model": "Logitech BRIO 4K",
+    "notes": "None"
+  }

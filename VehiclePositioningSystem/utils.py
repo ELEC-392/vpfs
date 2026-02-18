@@ -15,15 +15,174 @@ Conventions:
   - det.pose_R: 3x3 rotation (camera-to-tag).
   - det.pose_t: 3x1 translation (camera-to-tag), in meters.
 """
-
+import os
+import json
 import numpy as np
+import ref_tags 
+import cv2
+
 from numpy.typing import *
 from typing import Dict, Tuple
-import ref_tags 
 
 # World-to-tag transformation matrices (authoritative map of known tag poses).
 # Rotations are defined in ref_tags; here we just reference them.
 tags = ref_tags.ref_tags
+
+
+class Defaults:
+    # Fallback intrinsics (Logitech Brio 4K): fx, fy, cx, cy
+    FALLBACK_INTRINSICS = (978.56, 973.73, 825.30, 467.65)
+    CAM_WIDTH  = 4096
+    CAM_HEIGHT = 2160
+    CAMERA_SYMLINKS = [
+        "/dev/brio-camera1",
+        "/dev/brio-camera2",
+        "/dev/brio-camera3"
+    ]
+    TAG_SIZE = 10 / 100  # 10 cm in meters
+
+
+# Adapter to match utils.compute_camera_pos expected detection interface
+class ArucoDetection:
+    def __init__(self, tag_id: int, rvec: np.ndarray, tvec: np.ndarray, corners: np.ndarray):
+        # OpenCV gives tag->camera (object->camera) pose. Convert to camera->tag.
+        R_tc, _ = cv2.Rodrigues(rvec.reshape(3, 1))   # (3x3)
+        t_tc = tvec.reshape(3, 1)                     # (3x1)
+        R_ct = R_tc.T
+        t_ct = -R_tc.T @ t_tc
+
+        self.tag_id = int(tag_id)
+        self.pose_R = R_ct
+        self.pose_t = t_ct
+        self.corners = corners.reshape(-1, 2)
+        self.center = self.corners.mean(axis=0)
+
+
+def parse_calib_path(argv: list[str]) -> str | None:
+    """Parse --calib <path> or --calib=path from argv; return None if not provided."""
+    for i, arg in enumerate(argv):
+        if arg.startswith("--calib="):
+            return arg.split("=", 1)[1]
+        if arg == "--calib" and i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
+def load_intrinsics_from_json(path: str):
+    """
+    Load intrinsics from a calibration JSON (camera_calib.py schema).
+    Returns ((fx, fy, cx, cy), dist_coeffs_array) or None on failure.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            calib = json.load(f)
+
+        K = calib.get("camera_matrix")
+        if not K or len(K) != 3 or any(len(row) != 3 for row in K):
+            print(f"Invalid camera_matrix in {path}")
+            return None
+
+        fx = float(K[0][0]); fy = float(K[1][1]); cx = float(K[0][2]); cy = float(K[1][2])
+
+        # dist_coeffs may be 5, 8, or more terms; accept any length
+        dist_list = calib.get("dist_coeffs", [])
+        if not isinstance(dist_list, list):
+            dist_list = []
+        dist = np.array(dist_list, dtype=np.float64).reshape(-1, 1) if dist_list else np.zeros((5, 1), dtype=np.float64)
+
+        print(f"Loaded intrinsics from {path}: fx={fx:.2f}, fy={fy:.2f}, cx={cx:.2f}, cy={cy:.2f}, k={dist.flatten().tolist()}")
+        return (fx, fy, cx, cy), dist
+    except FileNotFoundError:
+        print(f"Calibration file not found: {path}")
+    except Exception as e:
+        print(f"Failed to load calibration from {path}: {e}")
+    return None
+
+
+def resolve_camera_intrinsics(argv: list[str]) -> Tuple[Tuple[float, float, float, float], np.ndarray]:
+    """
+    Resolve intrinsics and distortion in priority order:
+    1) --calib path from CLI
+    2) ./camera_calibration.json (next to this script)
+    3) FALLBACK_INTRINSICS + zero distortion (Brio 4K)
+    Returns ((fx, fy, cx, cy), dist_coeffs_array)
+    """
+    # CLI override
+    cli_path = parse_calib_path(argv)
+    if cli_path:
+        loaded = load_intrinsics_from_json(cli_path)
+        if loaded:
+            return loaded
+
+    # Default file next to this script
+    default_path = os.path.join(os.path.dirname(__file__), "camera_calibration.json")
+    loaded = load_intrinsics_from_json(default_path)
+    if loaded:
+        return loaded
+
+    print("Using fallback intrinsics (Logitech Brio 4K) and zero distortion.")
+    return (Defaults.FALLBACK_INTRINSICS), np.zeros((5, 1), dtype=np.float64)
+
+
+def find_camera(device_list=None, search_model=None):
+    """
+    Find camera device on Linux.
+    
+    Args:
+        device_list: List of device paths to check (default: CAMERA_DEVICES)
+        search_model: Optional model name to search for if device_list fails (e.g., 'Logitech BRIO')
+    
+    Returns:
+        Device path string (e.g., '/dev/brio-video' or '/dev/video2') or None
+    """
+    if device_list is None:
+        device_list = Defaults.CAMERA_SYMLINKS
+    
+    # First, check for devices in priority order
+    for device in device_list:
+        if os.path.exists(device):
+            try:
+                # Verify it's a valid video capture device
+                result = os.popen(f'udevadm info {device} 2>/dev/null | grep "ID_V4L_CAPABILITIES"').read()
+                if ':capture:' in result or result == '':  # Empty result means it might still work
+                    print(f"Found camera at {device}")
+                    return device
+            except:
+                continue
+    
+    # Fallback: search /dev/video* for specific model if specified
+    if search_model:
+        for i in range(20):  # Check up to video19
+            device = f'/dev/video{i}'
+            if not os.path.exists(device):
+                continue
+            try:
+                result = os.popen(f'udevadm info {device} 2>/dev/null | grep -E "ID_V4L_PRODUCT|ID_V4L_CAPABILITIES"').read()
+                if search_model in result and ':capture:' in result:
+                    print(f"Found {search_model} at {device}")
+                    return device
+            except:
+                continue
+    
+    return None
+
+
+def draw_aruco_overlays(img, corners, ids, CAM_K, CAM_D, TAG_SIZE, rvecs=None, tvecs=None):
+    if corners is not None and len(corners) > 0:
+        cv2.aruco.drawDetectedMarkers(img, corners, ids)
+        if rvecs is not None and tvecs is not None and len(rvecs) > 0:
+            for rvec, tvec in zip(rvecs, tvecs):
+                cv2.drawFrameAxes(img, CAM_K, CAM_D, rvec, tvec, TAG_SIZE * 0.5)
+        # Add text with relative position and between parenthesis the euclidean distance
+        for i, corner in enumerate(corners):
+            c = corner[0]
+            center_x = int(c[:, 0].mean())
+            center_y = int(c[:, 1].mean())
+            if rvecs is not None and tvecs is not None and i < len(tvecs):
+                tvec = tvecs[i]
+                text = f"X:{tvec[0][0]*100:.1f}cm Y:{tvec[1][0]*100:.1f}cm Z:{tvec[2][0]*100:.1f}cm ({np.linalg.norm(tvec)*100:.1f}cm)"
+                cv2.putText(img, text, (center_x - 100, center_y - 40), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 0), 3, cv2.LINE_AA)
+    return img
 
 
 def det_to_transform_mat(detection) -> ArrayLike:
@@ -180,3 +339,5 @@ def compute_tag_poses(detections, cam_pos: ArrayLike) -> Dict[int, Tuple[int, in
         )
 
     return tag_poses
+
+
