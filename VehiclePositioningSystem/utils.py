@@ -32,7 +32,7 @@ tags = ref_tags.ref_tags
 class Defaults:
     # Fallback intrinsics (Logitech Brio 4K): fx, fy, cx, cy
     FALLBACK_INTRINSICS = (978.56, 973.73, 825.30, 467.65)
-    CAM_WIDTH  = 4096
+    CAM_WIDTH  = 3840
     CAM_HEIGHT = 2160
     CAMERA_SYMLINKS = [
         "/dev/brio-camera1",

@@ -167,7 +167,7 @@ def main(argv=None, camera_id=0):
         # Display per-tag map-frame coordinates
         i = -100
         for tag in tagPoses:
-            cv2.putText(frame, f"{tag}: X{tagPoses[tag][0]:.2f} Y{tagPoses[tag][1]:.2f} Z{tagPoses[tag][2]:.2f}", (0, frameHeight + i), font, 3, (255, 0, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame, f"{tag}: X{tagPoses[tag][0]:.2f} Y{tagPoses[tag][1]:.2f} Z{tagPoses[tag][2]:.2f}", (0, frameHeight + i), cv2.FONT_HERSHEY_PLAIN, 3, (255, 0, 255), 2, cv2.LINE_AA)
             i -= 50
 
         cv2.imshow('frame', cv2.resize(frame, (Defaults.CAM_WIDTH//4, Defaults.CAM_HEIGHT//4)))

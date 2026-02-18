@@ -21,6 +21,8 @@ import numpy as np
 import time
 import os
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from utils import (
     Defaults,
@@ -140,6 +142,37 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     
     return frame, detections, cameraPos
 
+def capture_and_process_camera(cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, frame_time):
+    """Worker function to capture and process a single camera frame in parallel."""
+    ret, frame = cam_info["cap"].read()
+    
+    if not ret:
+        frame = np.zeros((Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, 3), dtype=np.uint8)
+        cv2.putText(frame, f"{cam_info['name']} - NO SIGNAL", 
+                  (50, Defaults.CAM_HEIGHT//2), cv2.FONT_HERSHEY_PLAIN, 
+                  3, (0, 0, 255), 3, cv2.LINE_AA)
+        return frame, [], None, 0.0
+    
+    # Process frame for ArUco detection
+    frame, detections, cameraPos = process_camera_frame(
+        frame, cam_info["id"], cam_info["name"], 
+        CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS
+    )
+    
+    # Calculate FPS per camera
+    current_time = time.time()
+    frameTime = current_time - frame_time
+    fps = 1 / frameTime if frameTime > 0 else 0.0
+    
+    # Add FPS overlay
+    h, w = frame.shape[:2]
+    cv2.putText(frame, f"{w}x{h} @ {fps:.1f}fps", 
+               (10, h - 10), cv2.FONT_HERSHEY_PLAIN, 
+               3, (255, 255, 255), 3, cv2.LINE_AA)
+    
+    return frame, detections, cameraPos, current_time
+
+
 def main(argv=None):
     """Main loop for multi-camera visualization and processing."""
     # Load camera intrinsics from JSON file or use defaults
@@ -179,32 +212,34 @@ def main(argv=None):
         return
     
     print(f"\nInitialized {len(cameras)} cameras. Press ESC to quit.\n")
+    print("Using multi-threaded processing for improved FPS...\n")
     
     # Main loop
     frame_times = [time.time()] * len(cameras)
     
-    while True:
-        frames = []
-        all_detections = []
-        all_tag_poses = {}
-        
-        # Capture and process frames from all cameras concurrently
-        for idx, cam_info in enumerate(cameras):
-            ret, frame = cam_info["cap"].read()
-            
-            if not ret:
-                print(f"Failed to read from {cam_info['name']}")
-                frame = np.zeros((Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, 3), dtype=np.uint8)
-                cv2.putText(frame, f"{cam_info['name']} - NO SIGNAL", 
-                          (50, Defaults.CAM_HEIGHT//2), cv2.FONT_HERSHEY_PLAIN, 
-                          3, (0, 0, 255), 3, cv2.LINE_AA)
-            else:
-                # Process frame for ArUco detection
-                frame, detections, cameraPos = process_camera_frame(
-                    frame, cam_info["id"], cam_info["name"], 
-                    CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS
+    # Create thread pool for parallel processing
+    with ThreadPoolExecutor(max_workers=len(cameras)) as executor:
+        while True:
+            # Submit all camera capture/process tasks in parallel
+            futures = []
+            for idx, cam_info in enumerate(cameras):
+                future = executor.submit(
+                    capture_and_process_camera,
+                    cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
+                    frame_times[idx]
                 )
+                futures.append((future, idx))
+            
+            # Collect results from all cameras
+            frames = []
+            all_detections = []
+            all_tag_poses = {}
+            
+            for future, idx in futures:
+                frame, detections, cameraPos, current_time = future.result()
+                frames.append(frame)
                 all_detections.extend(detections)
+                frame_times[idx] = current_time
                 
                 # If we have a valid camera pose, transform all detected tags to map/world coords
                 if cameraPos is not None:
@@ -212,37 +247,23 @@ def main(argv=None):
                     # Merge tag poses from this camera (later detections may override)
                     all_tag_poses.update(tagPoses)
             
-            # Calculate FPS per camera
-            current_time = time.time()
-            frameTime = current_time - frame_times[idx]
-            fps = 1 / frameTime if frameTime > 0 else 0.0
-            frame_times[idx] = current_time
+            # Send aggregated tag poses to VPFS backend
+            if all_tag_poses:
+                vpfs_connector.send_update(all_tag_poses)
+                print(f"Total tags detected: {len(all_tag_poses)}")
             
-            # Add FPS overlay
-            h, w = frame.shape[:2]
-            cv2.putText(frame, f"{w}x{h} @ {fps:.1f}fps", 
-                       (10, h - 10), cv2.FONT_HERSHEY_PLAIN, 
-                       3, (255, 255, 255), 3, cv2.LINE_AA)
+            # Display each camera in its own window
+            for idx, (frame, cam_info) in enumerate(zip(frames, cameras)):
+                # Resize to fit on screen (adjust scale as needed)
+                scale = 0.25  # Adjust this to make windows larger/smaller
+                resized = cv2.resize(frame, None, fx=scale, fy=scale)
+                
+                # Show in separate window for each camera
+                cv2.imshow(cam_info["name"], resized)
             
-            frames.append(frame)
-        
-        # Send aggregated tag poses to VPFS backend
-        if all_tag_poses:
-            vpfs_connector.send_update(all_tag_poses)
-            print(f"Total tags detected: {len(all_tag_poses)}")
-        
-        # Display each camera in its own window
-        for idx, (frame, cam_info) in enumerate(zip(frames, cameras)):
-            # Resize to fit on screen (adjust scale as needed)
-            scale = 0.25  # Adjust this to make windows larger/smaller
-            resized = cv2.resize(frame, None, fx=scale, fy=scale)
-            
-            # Show in separate window for each camera
-            cv2.imshow(cam_info["name"], resized)
-        
-        # Handle keyboard input
-        if cv2.waitKey(1) & 0xFF == 27:  # ESC to quit
-            break
+            # Handle keyboard input
+            if cv2.waitKey(1) & 0xFF == 27:  # ESC to quit
+                break
     
     # Cleanup
     for cam_info in cameras:
