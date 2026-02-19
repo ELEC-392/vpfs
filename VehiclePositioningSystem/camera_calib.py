@@ -45,6 +45,9 @@ from utils import Defaults
 PATTERN_SIZE = (14, 9)  # (width, height) in inner corners
 PATTERN_WIDTH, PATTERN_HEIGHT = PATTERN_SIZE
 
+# Detection performance: downscale for faster chessboard detection
+DETECTION_SCALE = 0.5  # Process at 50% resolution for speed, save full-res images
+
 # Termination criteria for corner refinement
 criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 
@@ -148,15 +151,25 @@ while True:
     if not ret or img is None:
         continue
 
-    # Convert to grayscale and detect chessboard
-    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    found, corners = cv.findChessboardCorners(gray, PATTERN_SIZE, None)
+    # Downscale for faster detection
+    if DETECTION_SCALE != 1.0:
+        detect_img = cv.resize(img, None, fx=DETECTION_SCALE, fy=DETECTION_SCALE, interpolation=cv.INTER_LINEAR)
+    else:
+        detect_img = img
+    
+    # Convert to grayscale and detect chessboard on downscaled image
+    gray_detect = cv.cvtColor(detect_img, cv.COLOR_BGR2GRAY)
+    found, corners = cv.findChessboardCorners(gray_detect, PATTERN_SIZE, None)
     
     corners2 = None
     if found:
-        # Subpixel refinement of detected corners
-        corners2 = cv.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-        # Visualize detected corners on the image
+        # Subpixel refinement on downscaled image
+        corners_refined = cv.cornerSubPix(gray_detect, corners, (11, 11), (-1, -1), criteria)
+        
+        # Scale corners back to full resolution for visualization and saving
+        corners2 = corners_refined / DETECTION_SCALE
+        
+        # Visualize detected corners on the full-resolution image
         cv.drawChessboardCorners(img, PATTERN_SIZE, corners2, found)
         status_msg = "Pattern FOUND - press C to capture"
         status_color = (0, 255, 0)
