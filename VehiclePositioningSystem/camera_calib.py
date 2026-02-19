@@ -1,12 +1,11 @@
 """
-Camera intrinsics calibration using a 15x10 chessboard pattern.
+Camera intrinsics calibration using a 14x9 chessboard pattern.
 
-Fixed-camera workflow for hands-free calibration:
+Workflow with helper:
 - Camera is fixed in position, user holds chessboard in different poses.
-- System auto-detects chessboard pattern continuously.
-- When a good quality detection is found, freezes frame and prompts user.
-- User can press 'C' to confirm/save or 'D' to discard/skip.
-- All confirmed images are saved to output directory for later recalibration.
+- System continuously detects and displays chessboard pattern in real-time.
+- Helper presses 'C' to capture frame when pattern is well-positioned.
+- All captured images are saved to output directory for later recalibration.
 - Press 'E' to end collection and run calibration.
 - Uses rational polynomial model (8 coefficients) for wide-angle lens distortion.
 
@@ -19,15 +18,14 @@ Arguments:
   --camera_id: Camera to calibrate (0, 1, or 2). Default: 0
   --output: Directory to save calibration images. Default: calib_images_cam{id}/
 
-Controls (when pattern detected):
-  C = Confirm and save image
-  D = Discard and continue
+Controls:
+  C = Capture frame (when pattern detected)
   E = End collection and calibrate
   ESC = Quit without saving
 
 Notes:
 - Uses camera symlinks and resolution from Defaults class (utils.py).
-- Chessboard pattern: 15x10 inner corners.
+- Chessboard pattern: 14x9 inner corners.
 - Move/tilt the chessboard to cover different areas and angles.
 - Collect at least 10-15 good samples for accurate calibration.
 """
@@ -39,13 +37,12 @@ import json
 import sys
 import shutil
 import argparse
-import time
 from pathlib import Path
 
 from utils import Defaults
 
 # Chessboard pattern configuration
-PATTERN_SIZE = (15, 10)  # (width, height) in inner corners
+PATTERN_SIZE = (14, 9)  # (width, height) in inner corners
 PATTERN_WIDTH, PATTERN_HEIGHT = PATTERN_SIZE
 
 # Termination criteria for corner refinement
@@ -136,7 +133,7 @@ frameHeight = int(cam.get(cv.CAP_PROP_FRAME_HEIGHT))
 max_fps = int(cam.get(cv.CAP_PROP_FPS))
 print(f"Actual capture: {frameWidth}x{frameHeight} @ {max_fps} fps")
 print(f"\nHold chessboard in different positions/angles.")
-print(f"System will auto-detect and prompt you to confirm each capture.\n")
+print(f"Helper presses 'C' to capture when pattern is well-positioned.\n")
 
 # Create preview window
 cv.namedWindow("Calibration", cv.WINDOW_NORMAL)
@@ -144,11 +141,6 @@ cv.resizeWindow("Calibration", 1280, 720)
 
 # State variables
 samples = 0
-detection_state = "searching"  # "searching" or "detected"
-frozen_frame = None
-frozen_corners = None
-last_detection_time = 0
-detection_cooldown = 2.0  # seconds between auto-detections
 
 while True:
     # Grab a frame
@@ -156,73 +148,41 @@ while True:
     if not ret or img is None:
         continue
 
-    current_time = time.time()
+    # Convert to grayscale and detect chessboard
+    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+    found, corners = cv.findChessboardCorners(gray, PATTERN_SIZE, None)
     
-    if detection_state == "searching":
-        # Continuous detection mode
-        gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-        found, corners = cv.findChessboardCorners(gray, PATTERN_SIZE, None)
-        
-        if found and (current_time - last_detection_time) > detection_cooldown:
-            # Good detection found - freeze and prompt user
-            corners2 = cv.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-            frozen_frame = img.copy()
-            frozen_corners = corners2.copy()
-            frozen_gray = gray.copy()
-            detection_state = "detected"
-            last_detection_time = current_time
-            
-            # Draw detection on frozen frame
-            cv.drawChessboardCorners(frozen_frame, PATTERN_SIZE, frozen_corners, True)
-        
-        # Live view with status
-        display_img = img.copy()
-        if found:
-            cv.drawChessboardCorners(display_img, PATTERN_SIZE, corners, True)
-            status_msg = "Pattern found! Analyzing..."
-            status_color = (0, 255, 255)
-        else:
-            status_msg = "Searching for pattern..."
-            status_color = (100, 100, 100)
-        
-        cv.putText(display_img, f"Samples: {samples}", (10, 40), 
-                  cv.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3, cv.LINE_AA)
-        cv.putText(display_img, status_msg, (10, 90), 
-                  cv.FONT_HERSHEY_SIMPLEX, 0.9, status_color, 2, cv.LINE_AA)
-        cv.putText(display_img, "E=End & Calibrate  ESC=Quit", (10, 140), 
-                  cv.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2, cv.LINE_AA)
-        
-        cv.imshow("Calibration", display_img)
-        key = cv.waitKey(1) & 0xFF
-        
-    elif detection_state == "detected":
-        # Show frozen frame and wait for user input
-        display_img = frozen_frame.copy()
-        cv.putText(display_img, f"Sample #{samples + 1}", (10, 40), 
-                  cv.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3, cv.LINE_AA)
-        cv.putText(display_img, "C=Confirm  D=Discard  E=End", (10, 90), 
-                  cv.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2, cv.LINE_AA)
-        
-        cv.imshow("Calibration", display_img)
-        key = cv.waitKey(10) & 0xFF
+    corners2 = None
+    if found:
+        # Subpixel refinement of detected corners
+        corners2 = cv.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+        # Visualize detected corners on the image
+        cv.drawChessboardCorners(img, PATTERN_SIZE, corners2, found)
+        status_msg = "Pattern FOUND - press C to capture"
+        status_color = (0, 255, 0)
+    else:
+        status_msg = "Searching for pattern..."
+        status_color = (100, 100, 100)
+    
+    # HUD overlay
+    cv.putText(img, f"Samples: {samples}", (10, 40), 
+              cv.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3, cv.LINE_AA)
+    cv.putText(img, status_msg, (10, 90), 
+              cv.FONT_HERSHEY_SIMPLEX, 0.9, status_color, 2, cv.LINE_AA)
+    cv.putText(img, "C=Capture  E=End & Calibrate  ESC=Quit", (10, 140), 
+              cv.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2, cv.LINE_AA)
+    
+    # Show preview
+    cv.imshow("Calibration", img)
+    key = cv.waitKey(1) & 0xFF
     
     # Handle keyboard input
-    if key == ord('c') and detection_state == "detected":
-        # Confirm and save
+    if key == ord('c') and found and corners2 is not None:
+        # Capture and save
         image_filename = output_dir / f"calib_{samples:03d}.png"
-        cv.imwrite(str(image_filename), frozen_frame)
+        cv.imwrite(str(image_filename), img)
         print(f"✓ Saved sample {samples + 1}: {image_filename.name}")
         samples += 1
-        detection_state = "searching"
-        frozen_frame = None
-        frozen_corners = None
-    
-    elif key == ord('d') and detection_state == "detected":
-        # Discard
-        print(f"✗ Discarded detection")
-        detection_state = "searching"
-        frozen_frame = None
-        frozen_corners = None
     
     elif key == ord('e'):
         # End collection and calibrate
