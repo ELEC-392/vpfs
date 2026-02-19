@@ -193,13 +193,6 @@ def capture_and_process_camera(cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARU
 
 def main(argv=None):
     """Main loop for multi-camera visualization and processing."""
-    # Load camera intrinsics from JSON file or use defaults
-    # Intrinsics used by the detector
-    (in_fx, in_fy, in_cx, in_cy), CAM_D = resolve_camera_intrinsics(argv=argv)
-    camera_intrinsics = (in_fx, in_fy, in_cx, in_cy)
-    # Build OpenCV camera matrix from loaded intrinsics
-    CAM_K = np.array([[in_fx, 0, in_cx], [0, in_fy, in_cy], [0, 0, 1]], dtype=np.float64)
-
     # --- ArUco setup ---
     aruco = cv2.aruco
     # Pick a dictionary that matches your printed markers
@@ -211,16 +204,22 @@ def main(argv=None):
     CAMERA_IDS = [0, 1, 2]
     CAMERA_NAMES = ["Camera 1", "Camera 2", "Camera 3"]
     
-    # Initialize all cameras
+    # Initialize all cameras with per-camera calibration
     cameras = []
     for cam_id, cam_name in zip(CAMERA_IDS, CAMERA_NAMES):
         try:
+            # Load camera-specific intrinsics
+            (in_fx, in_fy, in_cx, in_cy), CAM_D = resolve_camera_intrinsics(argv=argv, camera_id=cam_id)
+            CAM_K = np.array([[in_fx, 0, in_cx], [0, in_fy, in_cy], [0, 0, 1]], dtype=np.float64)
+            
             cam = initialize_camera(cam_id, CAM_K, CAM_D)
             if cam is not None:
                 cameras.append({
                     "cap": cam,
                     "id": cam_id,
-                    "name": cam_name
+                    "name": cam_name,
+                    "K": CAM_K,      # Store camera-specific intrinsics
+                    "D": CAM_D       # Store camera-specific distortion
                 })
         except Exception as e:
             print(f"Failed to initialize camera {cam_id}: {e}")
@@ -257,7 +256,7 @@ def main(argv=None):
                 gpu_frame, gpu_gray = gpu_resources[idx]
                 future = executor.submit(
                     capture_and_process_camera,
-                    cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
+                    cam_info, cam_info["K"], cam_info["D"], DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
                     frame_times[idx], gpu_frame, gpu_gray
                 )
                 futures.append((future, idx))

@@ -99,12 +99,18 @@ def load_intrinsics_from_json(path: str):
     return None
 
 
-def resolve_camera_intrinsics(argv: list[str]) -> Tuple[Tuple[float, float, float, float], np.ndarray]:
+def resolve_camera_intrinsics(argv: list[str], camera_id: int = 0) -> Tuple[Tuple[float, float, float, float], np.ndarray]:
     """
     Resolve intrinsics and distortion in priority order:
     1) --calib path from CLI
-    2) ./camera_calibration.json (next to this script)
-    3) FALLBACK_INTRINSICS + zero distortion (Brio 4K)
+    2) ./camera{id}_calibration.json (next to this script, based on camera_id)
+    3) ./camera_calibration.json (legacy fallback)
+    4) FALLBACK_INTRINSICS + zero distortion (Brio 4K)
+    
+    Args:
+        argv: Command-line arguments to parse for --calib override
+        camera_id: Camera ID (0, 1, 2) to load corresponding calibration file
+        
     Returns ((fx, fy, cx, cy), dist_coeffs_array)
     """
     # CLI override
@@ -114,13 +120,19 @@ def resolve_camera_intrinsics(argv: list[str]) -> Tuple[Tuple[float, float, floa
         if loaded:
             return loaded
 
-    # Default file next to this script
+    # Camera-specific calibration file: camera{id}_calibration.json
+    camera_specific_path = os.path.join(os.path.dirname(__file__), f"camera{camera_id}_calibration.json")
+    loaded = load_intrinsics_from_json(camera_specific_path)
+    if loaded:
+        return loaded
+
+    # Legacy fallback: camera_calibration.json (for backward compatibility)
     default_path = os.path.join(os.path.dirname(__file__), "camera_calibration.json")
     loaded = load_intrinsics_from_json(default_path)
     if loaded:
         return loaded
 
-    print("Using fallback intrinsics (Logitech Brio 4K) and zero distortion.")
+    print(f"Using fallback intrinsics for camera {camera_id} (Logitech Brio 4K) and zero distortion.")
     return (Defaults.FALLBACK_INTRINSICS), np.zeros((5, 1), dtype=np.float64)
 
 

@@ -38,7 +38,7 @@ import platform
 def main(argv=None, camera_id=0):
     # Load camera intrinsics from JSON file or use defaults
     # Intrinsics used by the detector
-    (in_fx, in_fy, in_cx, in_cy), CAM_D = resolve_camera_intrinsics(argv=argv)
+    (in_fx, in_fy, in_cx, in_cy), CAM_D = resolve_camera_intrinsics(argv=argv, camera_id=camera_id)
     camera_intrinsics = (in_fx, in_fy, in_cx, in_cy)
     # Build OpenCV camera matrix from loaded intrinsics
     CAM_K = np.array([[in_fx, 0, in_cx], [0, in_fy, in_cy], [0, 0, 1]], dtype=np.float64)
