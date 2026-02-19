@@ -283,11 +283,9 @@ calib = {
     "rms_reprojection_error": float(ret),
     "num_images": len(objpoints),
     "pattern_size": list(PATTERN_SIZE),
-    "rvecs": [rv.ravel().tolist() for rv in rvecs],
-    "tvecs": [tv.ravel().tolist() for tv in tvecs],
 }
 # Save with camera ID in filename for multi-camera setups
-calib_filename = f"camera{camera_id}_calibration.json" if camera_id > 0 else "camera_calibration.json"
+calib_filename = f"camera{camera_id}_calibration.json"
 calib_path = os.path.join(os.path.dirname(__file__), calib_filename)
 with open(calib_path, "w", encoding="utf-8") as f:
     json.dump(calib, f, indent=2)
