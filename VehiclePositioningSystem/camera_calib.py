@@ -146,54 +146,57 @@ cv.resizeWindow("Calibration", 1280, 720)
 samples = 0
 
 while True:
-    # Grab a frame
-    ret, img = cam.read()
-    if not ret or img is None:
+    # Grab a frame (keep original unmodified for saving)
+    ret, img_raw = cam.read()
+    if not ret or img_raw is None:
         continue
 
     # Downscale for faster detection
     if DETECTION_SCALE != 1.0:
-        detect_img = cv.resize(img, None, fx=DETECTION_SCALE, fy=DETECTION_SCALE, interpolation=cv.INTER_LINEAR)
+        detect_img = cv.resize(img_raw, None, fx=DETECTION_SCALE, fy=DETECTION_SCALE, interpolation=cv.INTER_LINEAR)
     else:
-        detect_img = img
+        detect_img = img_raw
     
     # Convert to grayscale and detect chessboard on downscaled image
     gray_detect = cv.cvtColor(detect_img, cv.COLOR_BGR2GRAY)
     found, corners = cv.findChessboardCorners(gray_detect, PATTERN_SIZE, None)
+    
+    # Create display copy for visualization (don't modify original)
+    img_display = img_raw.copy()
     
     corners2 = None
     if found:
         # Subpixel refinement on downscaled image
         corners_refined = cv.cornerSubPix(gray_detect, corners, (11, 11), (-1, -1), criteria)
         
-        # Scale corners back to full resolution for visualization and saving
+        # Scale corners back to full resolution for visualization
         corners2 = corners_refined / DETECTION_SCALE
         
-        # Visualize detected corners on the full-resolution image
-        cv.drawChessboardCorners(img, PATTERN_SIZE, corners2, found)
+        # Visualize detected corners on the DISPLAY copy only
+        cv.drawChessboardCorners(img_display, PATTERN_SIZE, corners2, found)
         status_msg = "Pattern FOUND - press C to capture"
         status_color = (0, 255, 0)
     else:
         status_msg = "Searching for pattern..."
         status_color = (100, 100, 100)
     
-    # HUD overlay
-    cv.putText(img, f"Samples: {samples}", (10, 40), 
+    # HUD overlay on display copy
+    cv.putText(img_display, f"Samples: {samples}", (10, 40), 
               cv.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3, cv.LINE_AA)
-    cv.putText(img, status_msg, (10, 90), 
+    cv.putText(img_display, status_msg, (10, 90), 
               cv.FONT_HERSHEY_SIMPLEX, 0.9, status_color, 2, cv.LINE_AA)
-    cv.putText(img, "C=Capture  E=End & Calibrate  ESC=Quit", (10, 140), 
+    cv.putText(img_display, "C=Capture  E=End & Calibrate  ESC=Quit", (10, 140), 
               cv.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2, cv.LINE_AA)
     
-    # Show preview
-    cv.imshow("Calibration", img)
+    # Show preview (display copy with annotations)
+    cv.imshow("Calibration", img_display)
     key = cv.waitKey(1) & 0xFF
     
     # Handle keyboard input
     if key == ord('c') and found and corners2 is not None:
-        # Capture and save
+        # Save RAW unmodified image for calibration
         image_filename = output_dir / f"calib_{samples:03d}.png"
-        cv.imwrite(str(image_filename), img)
+        cv.imwrite(str(image_filename), img_raw)
         print(f"✓ Saved sample {samples + 1}: {image_filename.name}")
         samples += 1
     
