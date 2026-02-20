@@ -216,7 +216,7 @@ def det_to_transform_mat(detection) -> ArrayLike:
 
     T = np.eye(4)
     T[:3, :3] = rot
-    T[:3, 3] = trans
+    T[:3, 3] = trans.flatten()
     return T
     # # Stack rotation and translation into a 3x4, then append homogeneous row
     # mat = np.concatenate((rot, trans), axis=1)         # (3x4)

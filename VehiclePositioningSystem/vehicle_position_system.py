@@ -162,7 +162,7 @@ def main(argv=None, camera_id=0):
         frameTime = time.time() - lastTime
         fps = 1 / frameTime if frameTime > 0 else 0.0
         lastTime = time.time()
-        cv2.putText(frame, f"{frameWidth}x{frameHeight} @ {fps:.2f} fps", (0, frameHeight - 10), cv2.FONT_HERSHEY_PLAIN, 10, (255, 255, 255), 5, cv2.LINE_AA)
+        cv2.putText(frame, f"{frameWidth}x{frameHeight} @ {fps:.2f} fps", (0, frameHeight - 10), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 255), 5, cv2.LINE_AA)
 
         # Display per-tag map-frame coordinates
         i = -100
@@ -184,6 +184,6 @@ if __name__ == "__main__":
     argv = sys.argv[1:]
 
     # CAM id
-    camera_id = 0
+    camera_id = 1
 
     main(argv=argv, camera_id=camera_id)
