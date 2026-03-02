@@ -20,18 +20,17 @@ import cv2
 import numpy as np
 import time
 import os
-import json
-import threading
 from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
 
 from utils import (
     Defaults,
     ArucoDetection,
-    find_camera,
     resolve_camera_intrinsics,
     draw_aruco_overlays,
     compute_camera_pos,
-    compute_tag_poses
+    compute_tag_poses,
+    det_to_transform_mat
 )
 
 # Check for CUDA/GPU support
@@ -160,6 +159,7 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     
     return frame, detections, cameraPos
 
+
 def capture_and_process_camera(cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, frame_time, gpu_frame=None, gpu_gray=None):
     """Worker function to capture and process a single camera frame in parallel."""
     ret, frame = cam_info["cap"].read()
@@ -190,6 +190,108 @@ def capture_and_process_camera(cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARU
                3, (255, 255, 255), 3, cv2.LINE_AA)
     
     return frame, detections, cameraPos, current_time
+
+
+def fuse_tag_poses_from_cameras(detections_by_camera):
+    """
+    Fuse tag detections from multiple cameras to compute world/map poses.
+    
+    This function processes tag detections from multiple cameras, computes each camera's
+    pose in the world coordinate system, transforms all tag detections to world coordinates,
+    and fuses multiple observations of the same tag by averaging their positions and orientations.
+    
+    Args:
+        detections_by_camera: Dict mapping camera_id (str or int) -> list of ArucoDetection objects
+            Each ArucoDetection should have: tag_id, pose_R (3x3 rotation), pose_t (3x1 translation)
+    
+    Returns:
+        Dict mapping tag_id (int) -> 4x4 transformation matrix in world/map coordinates
+        Returns empty dict if no valid detections are found.
+    
+    Example:
+        detections_by_camera = {
+            'camera0': [det1, det2, det3],
+            'camera1': [det4, det5],
+            'camera2': [det6]
+        }
+        tag_poses = fuse_tag_poses_from_cameras(detections_by_camera)
+        # tag_poses = {tag_id: 4x4_transform_matrix, ...}
+    """
+    
+    # Step 1: Compute camera poses and transform all detections to world coordinates
+    tag_observations = {}  # tag_id -> list of (4x4 transform matrix, weight)
+    
+    for camera_id, detections in detections_by_camera.items():
+        if not detections:
+            continue
+            
+        # Compute camera pose in world/map coordinates
+        camera_pose = compute_camera_pos(detections)
+        
+        if camera_pose is None:
+            # Cannot determine camera pose (no reference tags detected)
+            continue
+        
+        # Transform each detected tag to world coordinates
+        for det in detections:
+            # Get camera->tag transform
+            cam_to_tag = det_to_transform_mat(det)
+            
+            # Compute map->tag = (map->cam) * (cam->tag)
+            map_to_tag = np.matmul(camera_pose, cam_to_tag)
+            
+            # Weight based on distance (closer = higher weight)
+            dist = float(np.linalg.norm(det.pose_t.flatten()))
+            weight = 1.0 / max(dist, 1e-3)
+            
+            # Store observation for this tag
+            if det.tag_id not in tag_observations:
+                tag_observations[det.tag_id] = []
+            tag_observations[det.tag_id].append((map_to_tag, weight))
+    
+    # Step 2: Fuse multiple observations of each tag
+    fused_tag_poses = {}
+    
+    for tag_id, observations in tag_observations.items():
+        if len(observations) == 1:
+            # Only one observation, use it directly
+            fused_tag_poses[tag_id] = observations[0][0]
+        else:
+            # Multiple observations - fuse by averaging rotation and translation
+            transforms = [obs[0] for obs in observations]
+            weights = [obs[1] for obs in observations]
+            
+            # Extract rotations and translations
+            rotations = [T[:3, :3] for T in transforms]
+            translations = [T[:3, 3] for T in transforms]
+            
+            # Average rotation matrices using SVD (from utils._average_rotations logic)
+            M = np.zeros((3, 3), dtype=float)
+            wsum = 0.0
+            for R, w in zip(rotations, weights):
+                M += float(w) * R
+                wsum += float(w)
+            M /= wsum
+            U, _, Vt = np.linalg.svd(M)
+            R_avg = U @ Vt
+            if np.linalg.det(R_avg) < 0:
+                U[:, -1] *= -1
+                R_avg = U @ Vt
+            
+            # Average translations
+            t_avg = np.zeros(3, dtype=float)
+            for t, w in zip(translations, weights):
+                t_avg += float(w) * t
+            t_avg /= wsum
+            
+            # Build fused transform matrix
+            T_fused = np.eye(4)
+            T_fused[:3, :3] = R_avg
+            T_fused[:3, 3] = t_avg
+            
+            fused_tag_poses[tag_id] = T_fused
+    
+    return fused_tag_poses
 
 
 def main(argv=None):
@@ -266,18 +368,29 @@ def main(argv=None):
             frames = []
             all_detections = []
             all_tag_poses = {}
+            all_detections_by_camera = defaultdict(list)  # camera_id -> list of detections
             
             for future, idx in futures:
                 frame, detections, cameraPos, current_time = future.result()
                 frames.append(frame)
                 all_detections.extend(detections)
+                all_detections_by_camera[cameras[idx]["id"]].extend(detections)
                 frame_times[idx] = current_time
                 
                 # If we have a valid camera pose, transform all detected tags to map/world coords
                 if cameraPos is not None:
                     tagPoses = compute_tag_poses(detections, cameraPos)
+                    all_detections_by_camera[cameras[idx]["id"]].extend(detections)
                     # Merge tag poses from this camera (later detections may override)
-                    all_tag_poses.update(tagPoses)
+                    # all_tag_poses.update(tagPoses)
+
+            # Fuse tag poses from all cameras to get best estimate of world/map positions
+            all_tag_poses = fuse_tag_poses_from_cameras(all_detections_by_camera)
+
+            # Print tag poses for debugging
+            for tag_id, pose in all_tag_poses.items():
+                translation = pose[:3, 3].flatten()
+                print(f"Tag {tag_id}: X={translation[0]:.2f} Y={translation[1]:.2f} Z={translation[2]:.2f}")
             
             # Send aggregated tag poses to VPFS backend
             if all_tag_poses:
