@@ -154,7 +154,8 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     # Add camera name and position overlay
     cv2.putText(frame, camera_name, (10, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 0), 3, cv2.LINE_AA)
     if cameraPos is not None:
-        pos_text = f"Pos: X{cameraPos[0]:.2f} Y{cameraPos[1]:.2f} Z{cameraPos[2]:.2f}"
+        cameraTranslation = cameraPos[0:3, 3].flatten()
+        pos_text = f"Pos: X{cameraTranslation[0]:.2f} Y{cameraTranslation[1]:.2f} Z{cameraTranslation[2]:.2f}"
         cv2.putText(frame, pos_text, (10, 90), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2, cv2.LINE_AA)
     
     return frame, detections, cameraPos
