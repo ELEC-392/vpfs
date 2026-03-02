@@ -196,6 +196,11 @@ def fuse_tag_poses_from_cameras(detections_by_camera):
     """
     Fuse tag detections from multiple cameras to compute world/map poses.
     
+    Workflow:
+    1. For each camera, compute camera pose using reference tags (95-99)
+    2. Transform all detected tags (reference + mobile) to world coordinates
+    3. Fuse multiple observations of the same tag across cameras by weighted averaging
+    
     This function processes tag detections from multiple cameras, computes each camera's
     pose in the world coordinate system, transforms all tag detections to world coordinates,
     and fuses multiple observations of the same tag by averaging their positions and orientations.
@@ -387,15 +392,28 @@ def main(argv=None):
             # Fuse tag poses from all cameras to get best estimate of world/map positions
             all_tag_poses = fuse_tag_poses_from_cameras(all_detections_by_camera)
 
-            # Print tag poses for debugging
-            for tag_id, pose in all_tag_poses.items():
-                translation = pose[:3, 3].flatten()
-                print(f"Tag {tag_id}: X={translation[0]:.2f} Y={translation[1]:.2f} Z={translation[2]:.2f}")
+            # Convert 4x4 matrices to (x, y, z) tuples and filter out reference tags
+            # Reference tags (95-99) are fixed and used for camera localization only
+            REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
+            tag_positions = {}
             
-            # Send aggregated tag poses to VPFS backend
-            if all_tag_poses:
-                vpfs_connector.send_update(all_tag_poses)
-                print(f"Total tags detected: {len(all_tag_poses)}")
+            for tag_id, pose_matrix in all_tag_poses.items():
+                translation = pose_matrix[:3, 3].flatten()
+                
+                # Print all detected tags for debugging
+                tag_type = "REF" if tag_id in REFERENCE_TAG_IDS else "TAG"
+                print(f"[{tag_type}] {tag_id}: X={translation[0]:.3f}m Y={translation[1]:.3f}m Z={translation[2]:.3f}m")
+                
+                # Only include non-reference tags for VPFS updates
+                if tag_id not in REFERENCE_TAG_IDS:
+                    tag_positions[tag_id] = (translation[0], translation[1], translation[2])
+            
+            # Send only non-reference tag poses to VPFS backend
+            if tag_positions:
+                vpfs_connector.send_update(tag_positions)
+                print(f"Sent {len(tag_positions)} mobile tag(s) to VPFS (detected {len(all_tag_poses)} total including {len(all_tag_poses) - len(tag_positions)} reference tags)")
+            elif all_tag_poses:
+                print(f"Only reference tags detected ({len(all_tag_poses)}), no mobile tags to report")
             
             # Display each camera in its own window
             for idx, (frame, cam_info) in enumerate(zip(frames, cameras)):

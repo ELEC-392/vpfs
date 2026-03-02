@@ -27,9 +27,12 @@ def _addTag(tag: ReferenceTag):
 # Tags for lab setup
 # _addTag(ReferenceTag(584, 0.53, 0.715))
 
-# For the map we are using IDs: 95, 96, 97, 98, 99
-_addTag(ReferenceTag(95, 0., 0.))
-_addTag(ReferenceTag(96, 0.6, 0.))
-_addTag(ReferenceTag(97, 0.6, 0.7))
-_addTag(ReferenceTag(98, 0., 0.7))
-_addTag(ReferenceTag(99, 0.4, 0.36))
+# Reference tags (95-99) - Fixed markers with known world positions
+# These are used to compute camera poses. Once camera positions are known,
+# all other detected markers are transformed to world/map coordinates.
+# Positions are in meters (x, y).
+_addTag(ReferenceTag(95, 0., 0.))       # Origin corner
+_addTag(ReferenceTag(96, 0.6, 0.))      # Right edge
+_addTag(ReferenceTag(97, 0.6, 0.7))     # Far right corner
+_addTag(ReferenceTag(98, 0., 0.7))      # Far left corner
+_addTag(ReferenceTag(99, 0.4, 0.36))    # Center marker
