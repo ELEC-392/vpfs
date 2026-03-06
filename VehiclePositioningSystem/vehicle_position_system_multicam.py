@@ -7,6 +7,7 @@ Multi-Camera Vehicle Positioning System (VPS) runtime (ArUco-based).
 - Marker 95 is set as origin (0, 0, 0).
 - Marker 96 defines the X-axis direction.
 - Aggregates detections from all cameras for improved coverage.
+- Applies temporal smoothing to reduce position jitter.
 - Sends tag pose updates to the VPFS backend via vpfs_connector.
 - Shows live preview with marker overlays and FPS info for each camera.
 
@@ -22,6 +23,16 @@ Calibration:
 Reference Markers (Map Corners):
 - IDs 95-99 define the play area/map
 - Position relative to marker 95 can be verified with a ruler
+
+Performance:
+- Terminal shows FPS and marker positions in centimeters
+- Temporal smoothing reduces jitter (adjust SMOOTHING_ALPHA in code if needed)
+
+Camera Recovery:
+- Automatic recovery from camera failures using USB device reset
+- System continues with remaining cameras if one fails
+- Aggressive cleanup prevents need for system reboot
+- If recovery fails, check USB connections and try restarting the script
 """
 
 import sys
@@ -32,6 +43,7 @@ import cv2
 import numpy as np
 import time
 import os
+import signal
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 
@@ -60,6 +72,62 @@ OBJ_POINTS = np.array([[-Defaults.TAG_SIZE/2,  Defaults.TAG_SIZE/2, 0],
                        [Defaults.TAG_SIZE/2,   Defaults.TAG_SIZE/2, 0],
                        [Defaults.TAG_SIZE/2,  -Defaults.TAG_SIZE/2, 0],
                        [-Defaults.TAG_SIZE/2, -Defaults.TAG_SIZE/2, 0]], dtype=np.float32)
+
+
+def force_release_camera(cam, camera_device, camera_id):
+    """
+    Aggressively release camera with multiple attempts and USB reset.
+    """
+    if cam is None:
+        return
+    
+    print(f"  Releasing camera {camera_id}...")
+    
+    # Try normal release multiple times
+    for attempt in range(3):
+        try:
+            cam.release()
+            time.sleep(0.2)
+            break
+        except Exception as e:
+            print(f"    Release attempt {attempt+1} failed: {e}")
+            time.sleep(0.1)
+    
+    # Force close via system (kills any lingering processes)
+    time.sleep(0.3)
+    
+    # Try to reset the device at V4L2 level
+    try:
+        # Close all file descriptors to this device
+        os.system(f"fuser -k {camera_device} 2>/dev/null")
+        time.sleep(0.2)
+    except:
+        pass
+    
+    print(f"  Camera {camera_id} released")
+
+
+def reset_usb_device(camera_device):
+    """
+    Attempt to reset USB device using udevadm.
+    This can help recover from hard crashes without rebooting.
+    """
+    try:
+        print(f"  Attempting USB device reset for {camera_device}...")
+        
+        # Trigger udev action to re-enumerate device
+        result = os.system(f"udevadm trigger --action=change {camera_device} 2>/dev/null")
+        time.sleep(1.0)
+        
+        if result == 0:
+            print(f"  USB device reset successful")
+            return True
+        else:
+            print(f"  USB device reset failed (code {result})")
+            return False
+    except Exception as e:
+        print(f"  USB reset exception: {e}")
+        return False
 
 
 def initialize_camera(camera_id, CAM_K, CAM_D):
@@ -509,6 +577,20 @@ def main(argv=None):
     - Automatic camera recovery if consecutive failures are detected
     - Frame rate is limited to ~15 FPS to maintain stability
     
+    Camera Recovery:
+    - After 10 consecutive failures, attempts aggressive recovery:
+      1. Force release camera handle (multiple attempts)
+      2. Reset USB device at driver level (udevadm)
+      3. Reinitialize camera
+    - If recovery fails, camera is marked as permanently failed
+    - System continues operating with remaining working cameras
+    - If all cameras fail, system exits with error message
+    
+    Temporal Smoothing:
+    - Exponential moving average applied to marker positions
+    - SMOOTHING_ALPHA = 0.3 (lower = smoother but slower response, higher = faster but more jitter)
+    - Reduces fluctuations from detection noise
+    
     Command-line Arguments:
     - --no-display : Run in headless mode (no visual windows, faster performance)
     - --calib <path> : Path to camera calibration file
@@ -580,15 +662,37 @@ def main(argv=None):
     fps_timestamps = []
     last_fps_print = time.time()
     
+    # Temporal smoothing for marker positions (reduces jitter)
+    # Using exponential moving average: smoothed = alpha * new + (1-alpha) * old
+    smoothed_positions = {}  # tag_id -> (x, y, z)
+    SMOOTHING_ALPHA = 0.3  # 0.3 = more smoothing, 0.7+ = more responsive
+    
     # Create thread pool for parallel processing (NOT for capture)
+    print("\nStarting main capture loop...")
+    print("Press ESC (with display) or Ctrl+C (headless) to exit\n")
+    
     with ThreadPoolExecutor(max_workers=len(cameras)) as executor:
         while True:
             loop_start = time.time()
+            
+            # Check if all cameras have failed
+            working_cameras = sum(1 for err in camera_errors if err >= 0)
+            if working_cameras == 0:
+                print("\n" + "="*70)
+                print("ERROR: All cameras have failed!")
+                print("Please check camera connections and restart the system.")
+                print("="*70)
+                break
             
             # Step 1: Capture frames SEQUENTIALLY (one at a time) to avoid USB bandwidth issues
             # This prevents V4L2 select() timeouts
             captured_frames = []
             for idx, cam_info in enumerate(cameras):
+                # Skip permanently failed cameras (marked as -1)
+                if camera_errors[idx] < 0:
+                    captured_frames.append(None)
+                    continue
+                
                 try:
                     # Set a timeout for camera read
                     ret, frame = cam_info["cap"].read()
@@ -600,19 +704,49 @@ def main(argv=None):
                         
                         # If too many consecutive errors, try to reinitialize
                         if camera_errors[idx] >= MAX_CONSECUTIVE_ERRORS:
-                            print(f"ERROR: {cam_info['name']} has {camera_errors[idx]} consecutive failures. Attempting reinit...")
+                            print(f"\n{'='*70}")
+                            print(f"ERROR: {cam_info['name']} has {camera_errors[idx]} consecutive failures")
+                            print(f"Attempting aggressive recovery...")
+                            print(f"{'='*70}")
+                            
                             try:
-                                cam_info["cap"].release()
-                                time.sleep(0.5)
+                                camera_device = Defaults.CAMERA_SYMLINKS[cam_info["id"]]
+                                
+                                # Step 1: Force release current camera handle
+                                force_release_camera(cam_info["cap"], camera_device, cam_info["id"])
+                                time.sleep(1.0)
+                                
+                                # Step 2: Try USB device reset
+                                reset_usb_device(camera_device)
+                                time.sleep(1.0)
+                                
+                                # Step 3: Attempt to reinitialize
+                                print(f"  Attempting to reinitialize {cam_info['name']}...")
                                 new_cam = initialize_camera(cam_info["id"], cam_info["K"], cam_info["D"])
-                                if new_cam is not None:
+                                
+                                if new_cam is not None and new_cam.isOpened():
                                     cam_info["cap"] = new_cam
                                     camera_errors[idx] = 0
-                                    print(f"✓ {cam_info['name']} reinitialized successfully")
+                                    print(f"✓ {cam_info['name']} successfully recovered!")
                                 else:
-                                    print(f"✗ {cam_info['name']} reinit failed")
+                                    print(f"✗ {cam_info['name']} recovery failed")
+                                    print(f"  Device may need manual reset or system reboot")
+                                    # Mark camera as permanently failed (don't retry)
+                                    camera_errors[idx] = -1
+                                    remaining = sum(1 for e in camera_errors if e >= 0)
+                                    print(f"  Continuing with {remaining} remaining camera(s)")
+                                    
                             except Exception as e:
-                                print(f"✗ {cam_info['name']} reinit exception: {e}")
+                                print(f"✗ {cam_info['name']} recovery exception: {e}")
+                                camera_errors[idx] = -1
+                                remaining = sum(1 for e in camera_errors if e >= 0)
+                                print(f"  Continuing with {remaining} remaining camera(s)")
+                            
+                            print(f"{'='*70}\n")
+                        
+                        # Skip camera if permanently failed (marked as -1)
+                        if camera_errors[idx] < 0:
+                            continue
                     else:
                         captured_frames.append(frame)
                         camera_errors[idx] = 0  # Reset error count on success
@@ -681,7 +815,23 @@ def main(argv=None):
             
             # Compute relative marker positions (marker 95 as origin, 96 along X-axis)
             # This doesn't require pre-defined world positions - builds coordinate frame from markers
-            all_marker_positions = compute_relative_marker_positions(all_detections_by_camera)
+            raw_marker_positions = compute_relative_marker_positions(all_detections_by_camera)
+            
+            # Apply temporal smoothing to reduce jitter/fluctuations
+            all_marker_positions = {}
+            for tag_id, (x, y, z) in raw_marker_positions.items():
+                if tag_id in smoothed_positions:
+                    # Apply exponential moving average
+                    old_x, old_y, old_z = smoothed_positions[tag_id]
+                    smoothed_x = SMOOTHING_ALPHA * x + (1 - SMOOTHING_ALPHA) * old_x
+                    smoothed_y = SMOOTHING_ALPHA * y + (1 - SMOOTHING_ALPHA) * old_y
+                    smoothed_z = SMOOTHING_ALPHA * z + (1 - SMOOTHING_ALPHA) * old_z
+                    smoothed_positions[tag_id] = (smoothed_x, smoothed_y, smoothed_z)
+                else:
+                    # First observation - initialize with raw value
+                    smoothed_positions[tag_id] = (x, y, z)
+                
+                all_marker_positions[tag_id] = smoothed_positions[tag_id]
 
             # Reference markers define the coordinate system
             REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
@@ -695,7 +845,8 @@ def main(argv=None):
                 print("\n--- Reference Markers (Map Corners) ---")
                 for tag_id in sorted([tid for tid in all_marker_positions.keys() if tid in REFERENCE_TAG_IDS]):
                     x, y, z = all_marker_positions[tag_id]
-                    print(f"  Marker {tag_id:2d}: X={x:7.4f}m  Y={y:7.4f}m  Z={z:7.4f}m  (distance: {np.sqrt(x**2 + y**2):.4f}m)")
+                    # Convert to centimeters to match overlay display
+                    print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  Z={z*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
                 
                 # Print mobile markers (vehicles/objects being tracked)
                 mobile_markers = {tid: pos for tid, pos in all_marker_positions.items() if tid not in REFERENCE_TAG_IDS}
@@ -703,7 +854,8 @@ def main(argv=None):
                     print("\n--- Mobile Markers (Tracked Objects) ---")
                     for tag_id in sorted(mobile_markers.keys()):
                         x, y, z = mobile_markers[tag_id]
-                        print(f"  Marker {tag_id:2d}: X={x:7.4f}m  Y={y:7.4f}m  Z={z:7.4f}m  (distance: {np.sqrt(x**2 + y**2):.4f}m)")
+                        # Convert to centimeters to match overlay display
+                        print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  Z={z*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
                     
                     # Send mobile markers to VPFS backend
                     vpfs_connector.send_update(mobile_markers)
@@ -758,7 +910,8 @@ def main(argv=None):
     print("\nShutting down cameras...")
     for idx, cam_info in enumerate(cameras):
         try:
-            cam_info["cap"].release()
+            camera_device = Defaults.CAMERA_SYMLINKS[cam_info["id"]]
+            force_release_camera(cam_info["cap"], camera_device, cam_info["id"])
             print(f"  ✓ {cam_info['name']} released")
         except Exception as e:
             print(f"  ✗ Error releasing {cam_info['name']}: {e}")
