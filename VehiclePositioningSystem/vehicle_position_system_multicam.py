@@ -430,77 +430,138 @@ def fuse_tag_poses_from_cameras(detections_by_camera):
 
 def compute_marker_positions_with_extrinsics(detections_by_camera, camera_extrinsics):
     """
-    Compute marker positions using pre-calibrated camera extrinsics.
-    
-    This approach is much more stable than computing poses on-the-fly because:
-    - Camera-to-world transforms are pre-computed from many samples
-    - No need to detect reference markers in every frame
-    - Reduces noise and variability significantly
-    
-    Transform chain:
-    - Calibration stores: world->camera (camera's pose in world frame)
-    - Detection gives: camera->tag (tag's pose in camera frame)
-    - We need to invert world->camera to get camera->world
-    - Then compute: world->tag = camera->world * camera->tag
-    
+    Compute world-frame marker positions using stereo-style inter-camera extrinsics.
+
+    Calibration file stores T_{camN -> cam0} for each secondary camera N.
+    Camera 0 is the reference; its detections are used directly.
+
+    Algorithm
+    ---------
+    1. For each camera, convert every detection to a 3-D position in that
+       camera's coordinate frame  (= original tvec from solvePnP).
+    2. For secondary cameras, transform the position into Camera 0's frame
+       using the pre-calibrated T_{camN -> cam0}.
+    3. Collect all Camera-0-frame positions and fuse duplicates via a
+       distance-weighted average.
+    4. Establish the world frame:
+         • Marker 95 → origin  (0, 0, 0)
+         • Marker 96 → defines the +X axis
+       If marker 95 is not visible this frame, return an empty dict.
+
     Args:
-        detections_by_camera: Dict mapping camera_id -> list of ArucoDetection objects
-        camera_extrinsics: Dict mapping camera_id (as string) -> camera-to-world transform (4x4)
-        
+        detections_by_camera : dict  camera_id -> list[ArucoDetection]
+        camera_extrinsics    : dict  loaded from camera_extrinsics.json
+                               keys "1", "2", …  each has a "transform" (4x4)
+
     Returns:
-        Dict mapping tag_id -> (x, y, z) in meters relative to world frame
+        dict  tag_id -> (x_m, y_m, z_m)  in the marker-95 world frame
     """
-    marker_observations = {}  # tag_id -> list of ((x,y,z), weight)
-    
+    ORIGIN_MARKER_ID = 95
+    X_AXIS_MARKER_ID = 96
+
+    # Pre-load secondary-camera transforms once per call
+    secondary_transforms = {}   # int cam_id -> 4x4 ndarray  T_{camN->cam0}
+    for key, val in camera_extrinsics.items():
+        if key.startswith("_"):       # skip metadata
+            continue
+        try:
+            cam_id = int(key)
+            if cam_id == 0:
+                continue             # Camera 0 is the reference
+            secondary_transforms[cam_id] = np.array(val["transform"])
+        except (ValueError, KeyError):
+            pass
+
+    # -----------------------------------------------------------------
+    # Step 1 & 2: Collect all detections expressed in Camera 0's frame
+    # -----------------------------------------------------------------
+    # cam0_frame_observations: tag_id -> list of (position_3d, weight)
+    cam0_frame_observations = {}
+
     for camera_id, detections in detections_by_camera.items():
         if not detections:
             continue
-        
-        # Get pre-computed camera-to-world transform
-        cam_id_str = str(camera_id)
-        if cam_id_str not in camera_extrinsics:
-            print(f"Warning: No extrinsic calibration for camera {camera_id}, skipping")
-            continue
-        
-        # Load transform from calibration (stored as world->camera)
-        world_to_cam = np.array(camera_extrinsics[cam_id_str]["transform"])
-        
-        # CRITICAL: Invert to get camera->world
-        # The calibration stores where the camera is in world coordinates (world->camera)
-        # To transform tag detections from camera frame to world frame, we need the inverse
-        cam_to_world = np.linalg.inv(world_to_cam)
-        
-        # Transform each detection to world coordinates
+
         for det in detections:
-            # Get camera->tag transform
-            cam_to_tag = det_to_transform_mat(det)
-            
-            # Compute world->tag = (camera->world) * (camera->tag)
-            world_to_tag = np.matmul(cam_to_world, cam_to_tag)
-            
-            # Extract position
-            position = world_to_tag[:3, 3]
-            
-            # Weight based on distance (closer = more reliable)
-            dist = float(np.linalg.norm(det.pose_t.flatten()))
+            # Marker centre in this camera's coordinate frame.
+            # inv(T_{cam->marker})[:3, 3] is the camera origin in marker frame,
+            # but what we want is the MARKER origin in the CAMERA frame,
+            # which is just t_tc (the original tvec from solvePnP).
+            # ArucoDetection stores:
+            #   pose_R = R_ct  (camera->tag rotation)
+            #   pose_t = t_ct  = -R_ct @ t_tc  (camera origin in tag frame)
+            # So marker in camera frame = -pose_R.T @ pose_t = t_tc
+            R_ct = det.pose_R                          # 3x3
+            t_ct = det.pose_t.reshape(3)               # camera origin in tag frame
+            pos_in_cam = (-R_ct.T @ t_ct)              # marker centre in camera frame
+
+            # Transform to Camera 0 frame
+            if camera_id == 0:
+                pos_cam0 = pos_in_cam
+            else:
+                T = secondary_transforms.get(camera_id)
+                if T is None:
+                    # No calibration for this camera — skip
+                    continue
+                pos_cam0 = (T @ np.append(pos_in_cam, 1.0))[:3]
+
+            # Weight: closer detections are more reliable
+            dist = float(np.linalg.norm(pos_in_cam))
             weight = 1.0 / max(dist, 1e-3)
-            
-            if det.tag_id not in marker_observations:
-                marker_observations[det.tag_id] = []
-            marker_observations[det.tag_id].append((position, weight))
-    
-    # Fuse observations using weighted average
-    marker_positions = {}
-    for tag_id, observations in marker_observations.items():
-        positions = np.array([obs[0] for obs in observations])
-        weights = np.array([obs[1] for obs in observations])
-        
-        # Weighted average
+
+            tag_id = int(det.tag_id)
+            if tag_id not in cam0_frame_observations:
+                cam0_frame_observations[tag_id] = []
+            cam0_frame_observations[tag_id].append((pos_cam0, weight))
+
+    if not cam0_frame_observations:
+        return {}
+
+    # -----------------------------------------------------------------
+    # Step 3: Fuse multiple observations → single 3-D position per tag
+    # -----------------------------------------------------------------
+    cam0_positions = {}    # tag_id -> np.ndarray (3,)
+    for tag_id, obs in cam0_frame_observations.items():
+        positions = np.array([o[0] for o in obs])
+        weights   = np.array([o[1] for o in obs])
         wsum = np.sum(weights)
-        avg_pos = np.sum(positions * weights[:, np.newaxis], axis=0) / wsum
-        
-        marker_positions[tag_id] = (float(avg_pos[0]), float(avg_pos[1]), float(avg_pos[2]))
-    
+        cam0_positions[tag_id] = np.sum(positions * weights[:, np.newaxis], axis=0) / wsum
+
+    # -----------------------------------------------------------------
+    # Step 4: Establish world frame from marker 95 (origin) and 96 (+X)
+    # -----------------------------------------------------------------
+    if ORIGIN_MARKER_ID not in cam0_positions:
+        return {}   # Cannot establish world frame without the origin marker
+
+    origin = cam0_positions[ORIGIN_MARKER_ID]
+
+    # Build rotation that maps Camera-0 frame to world frame
+    if X_AXIS_MARKER_ID in cam0_positions:
+        x_vec = cam0_positions[X_AXIS_MARKER_ID] - origin
+        x_len = np.linalg.norm(x_vec)
+        if x_len > 1e-4:
+            x_hat = x_vec / x_len
+            # Build an orthonormal frame: X = x_hat, Y = X × Z (or X × up), Z = ?
+            # Use a "least bad" up vector to form Z then recompute Y
+            up = np.array([0.0, -1.0, 0.0])  # Camera 0's -Y is roughly "up" (ceiling mount)
+            if abs(np.dot(x_hat, up)) > 0.9:  # nearly parallel – choose another up
+                up = np.array([0.0, 0.0, 1.0])
+            z_hat = np.cross(x_hat, up)
+            z_hat /= np.linalg.norm(z_hat)
+            y_hat = np.cross(z_hat, x_hat)
+            # R_world_from_cam0: columns are basis vectors expressed in cam0 frame
+            R_wc = np.column_stack([x_hat, y_hat, z_hat])   # 3×3
+        else:
+            R_wc = np.eye(3)
+    else:
+        R_wc = np.eye(3)    # No marker 96 — use Camera 0 orientation as-is
+
+    # Translate then rotate every fused position
+    marker_positions = {}
+    for tag_id, pos_cam0 in cam0_positions.items():
+        p_world = R_wc.T @ (pos_cam0 - origin)
+        marker_positions[tag_id] = (float(p_world[0]), float(p_world[1]), float(p_world[2]))
+
     return marker_positions
 
 
