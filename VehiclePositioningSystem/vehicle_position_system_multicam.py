@@ -245,7 +245,7 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     if detections:
         temp_dict = {camera_id: detections}
         try:
-            world_positions = compute_relative_marker_positions(temp_dict)
+            world_positions = compute_world_positions(temp_dict)
         except:
             pass
 
@@ -436,14 +436,24 @@ def compute_world_positions(detections_by_camera):
             continue
 
         # Estimate this camera's pose from visible reference markers
+        # map_to_cam: transforms a point in map frame into camera frame
         map_to_cam = compute_camera_pos(detections)
         if map_to_cam is None:
             continue  # no reference markers visible on this camera this frame
 
-        # Project every detected marker into world/map coordinates
-        tag_world = compute_tag_poses(detections, map_to_cam)
-        for tag_id, pos in tag_world.items():
-            all_observations.setdefault(tag_id, []).append(pos)
+        for det in detections:
+            # cam_to_tag: transforms a point in camera frame into tag frame
+            cam_to_tag = det_to_transform_mat(det)
+            # map_to_tag: transforms map frame → camera frame → tag frame
+            map_to_tag = map_to_cam @ cam_to_tag
+            # The tag's position in the map frame is the translation of the
+            # INVERSE transform (tag_to_map), NOT map_to_tag[:3,3].
+            # map_to_tag = [R | t], so inv = [R.T | -R.T @ t]
+            R = map_to_tag[:3, :3]
+            t = map_to_tag[:3, 3]
+            tag_pos_world = -R.T @ t   # tag origin in map/world coordinates
+
+            all_observations.setdefault(int(det.tag_id), []).append(tag_pos_world)
 
     # Average across cameras for tags seen by more than one
     result = {}

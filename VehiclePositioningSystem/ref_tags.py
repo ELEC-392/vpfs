@@ -32,7 +32,7 @@ def _addTag(tag: ReferenceTag):
 # all other detected markers are transformed to world/map coordinates.
 # Positions are in meters (x, y).
 _addTag(ReferenceTag(95, 0., 0.))       # Origin corner
-_addTag(ReferenceTag(96, 0.6, 0.))      # Right edge
-_addTag(ReferenceTag(97, 0.6, 0.7))     # Far right corner
-_addTag(ReferenceTag(98, 0., 0.7))      # Far left corner
-_addTag(ReferenceTag(99, 0.4, 0.36))    # Center marker
+_addTag(ReferenceTag(96, 1.05, 0.))      # Right edge
+_addTag(ReferenceTag(97, 1.05, 1.05))     # Far right corner
+_addTag(ReferenceTag(98, 0., 1.05))      # Far left corner
+_addTag(ReferenceTag(99, 0.5, 0.))    # Center marker
