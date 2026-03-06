@@ -657,9 +657,15 @@ def main(argv=None):
     Camera Handling Strategy:
     - Frames are captured SEQUENTIALLY (one camera at a time) to prevent USB bandwidth saturation
     - Processing (ArUco detection) is done in PARALLEL for performance
-    - Small delays between captures prevent V4L2 select() timeouts
+    - Frame buffers are flushed before capture to prevent overflow and ensure fresh frames
     - Automatic camera recovery if consecutive failures are detected
-    - Frame rate is limited to ~15 FPS to maintain stability
+    
+    Update Frequency:
+    - System operates at fixed frequency (default 10Hz, configurable with --hz)
+    - Mimics real positioning systems (GPS, motion capture, etc.)
+    - Ensures deterministic, predictable updates
+    - Prevents CPU overload and camera crashes
+    - Better for integration with control systems (fixed dt)
     
     Camera Recovery:
     - After 10 consecutive failures, attempts aggressive recovery:
@@ -676,6 +682,7 @@ def main(argv=None):
     - Reduces fluctuations from detection noise
     
     Command-line Arguments:
+    - --hz <frequency> : Update frequency in Hz (default: 10, recommended: 1-20)
     - --no-display : Run in headless mode (no visual windows, faster performance)
     - --extrinsics <path> : Path to camera extrinsics calibration file (recommended!)
     - --calib <path> : Path to camera intrinsics calibration file
@@ -683,11 +690,25 @@ def main(argv=None):
     # Parse command-line flags
     show_display = True
     camera_extrinsics = None
+    update_frequency_hz = 10  # Default 10Hz update rate
     
     if argv:
         if '--no-display' in argv:
             show_display = False
             print("Running in headless mode (no visual display)")
+        
+        # Parse update frequency
+        if '--hz' in argv:
+            idx = argv.index('--hz')
+            if idx + 1 < len(argv):
+                try:
+                    update_frequency_hz = float(argv[idx + 1])
+                    if update_frequency_hz <= 0 or update_frequency_hz > 60:
+                        print(f"Warning: Invalid frequency {update_frequency_hz}Hz, using default 10Hz")
+                        update_frequency_hz = 10
+                except ValueError:
+                    print(f"Warning: Invalid frequency value, using default 10Hz")
+                    update_frequency_hz = 10
         
         # Load extrinsic calibration if provided
         if '--extrinsics' in argv:
@@ -706,6 +727,16 @@ def main(argv=None):
             print("\nWARNING: No extrinsic calibration provided.")
             print("  For stable results, run: python calibrate_camera_extrinsics.py")
             print("  Then use: --extrinsics camera_extrinsics.json\n")
+    
+    # Display system configuration
+    target_loop_time = 1.0 / update_frequency_hz
+    print(f"\n{'='*70}")
+    print(f"MULTI-CAMERA POSITIONING SYSTEM")
+    print(f"{'='*70}")
+    print(f"Update Frequency: {update_frequency_hz} Hz (period: {target_loop_time*1000:.1f}ms)")
+    print(f"Display Mode: {'Visual' if show_display else 'Headless (faster)'}")
+    print(f"Extrinsic Cal: {'✓ Loaded' if camera_extrinsics else '✗ Not loaded (less stable)'}")
+    print(f"{'='*70}\n")
     
     # --- ArUco setup ---
     aruco = cv2.aruco
@@ -763,15 +794,20 @@ def main(argv=None):
     camera_errors = [0] * len(cameras)  # Track consecutive errors per camera
     MAX_CONSECUTIVE_ERRORS = 10
     
-    # FPS tracking
-    fps_window_size = 30  # Calculate FPS over last 30 frames
-    fps_timestamps = []
-    last_fps_print = time.time()
+    # Update frequency tracking
+    update_count = 0
+    start_time = time.time()
+    last_stats_print = time.time()
+    STATS_PRINT_INTERVAL = 5.0  # Print stats every 5 seconds
     
     # Temporal smoothing for marker positions (reduces jitter)
     # Using exponential moving average: smoothed = alpha * new + (1-alpha) * old
     smoothed_positions = {}  # tag_id -> (x, y, z)
     SMOOTHING_ALPHA = 0.3  # 0.3 = more smoothing, 0.7+ = more responsive
+    
+    # Timing diagnostics
+    last_timing_warning = 0
+    TIMING_WARNING_INTERVAL = 10.0  # Warn every 10 seconds if processing is slow
     
     # Create thread pool for parallel processing (NOT for capture)
     print("\nStarting main capture loop...")
@@ -793,6 +829,8 @@ def main(argv=None):
             # Step 1: Capture frames SEQUENTIALLY (one at a time) to avoid USB bandwidth issues
             # This prevents V4L2 select() timeouts
             captured_frames = []
+            capture_start = time.time()
+            
             for idx, cam_info in enumerate(cameras):
                 # Skip permanently failed cameras (marked as -1)
                 if camera_errors[idx] < 0:
@@ -800,8 +838,19 @@ def main(argv=None):
                     continue
                 
                 try:
-                    # Set a timeout for camera read
-                    ret, frame = cam_info["cap"].read()
+                    # CRITICAL: Flush old frames from buffer to prevent buffer overflow
+                    # This ensures we always get the freshest frame, not stale buffered frames
+                    # Without this, frames pile up when processing > capture rate → driver crash
+                    # Adaptive flushing: flush 1-2 frames (enough to clear buffer without wasting time)
+                    for _ in range(2):  # Discard 2 old frames (reduced from 3 for efficiency)
+                        cam_info["cap"].grab()
+                    
+                    # Now grab and retrieve the freshest frame
+                    ret = cam_info["cap"].grab()
+                    if ret:
+                        ret, frame = cam_info["cap"].retrieve()
+                    else:
+                        frame = None
                     
                     if not ret or frame is None:
                         print(f"Warning: {cam_info['name']} failed to capture frame (error count: {camera_errors[idx] + 1})")
@@ -865,6 +914,11 @@ def main(argv=None):
                     captured_frames.append(None)
                     camera_errors[idx] += 1
             
+            # Log capture timing if it's taking too long
+            capture_time = time.time() - capture_start
+            if capture_time > 0.2:  # Capture taking more than 200ms is concerning
+                print(f"⚠ Slow capture: {capture_time*1000:.0f}ms for {len(cameras)} cameras")
+            
             # Step 2: Process captured frames in PARALLEL (ArUco detection is CPU-intensive)
             futures = []
             for idx, cam_info in enumerate(cameras):
@@ -906,18 +960,16 @@ def main(argv=None):
                               (50, Defaults.CAM_HEIGHT//2), cv2.FONT_HERSHEY_PLAIN, 
                               3, (0, 0, 255), 3, cv2.LINE_AA)
 
-            # Update FPS tracking
-            fps_timestamps.append(time.time())
-            if len(fps_timestamps) > fps_window_size:
-                fps_timestamps.pop(0)
-            
-            # Calculate and print FPS to terminal (every 2 seconds)
+            # Update statistics
+            update_count += 1
             current_time = time.time()
-            if current_time - last_fps_print >= 2.0:
-                if len(fps_timestamps) > 1:
-                    fps = (len(fps_timestamps) - 1) / (fps_timestamps[-1] - fps_timestamps[0])
-                    print(f"\n[FPS: {fps:.1f}] Processing {len(cameras)} cameras...")
-                last_fps_print = current_time
+            
+            # Print system statistics (every 5 seconds)
+            if current_time - last_stats_print >= STATS_PRINT_INTERVAL:
+                elapsed = current_time - start_time
+                actual_hz = update_count / elapsed if elapsed > 0 else 0
+                print(f"\n[Stats] Updates: {update_count}, Actual: {actual_hz:.2f}Hz (target: {update_frequency_hz}Hz)")
+                last_stats_print = current_time
             
             # Compute relative marker positions
             # Use pre-calibrated extrinsics if available (much more stable!)
@@ -999,23 +1051,27 @@ def main(argv=None):
                 if key == 27:  # ESC to quit
                     break
             else:
-                # In headless mode, check for Ctrl+C via a small sleep
+                # In headless mode, minimal wait for keyboard interrupt check
                 try:
                     time.sleep(0.001)
                 except KeyboardInterrupt:
                     print("\nReceived interrupt signal, shutting down...")
                     break
             
-            # Optional: frame rate limiting to prevent overwhelming cameras
-            # In headless mode, can run faster; with display, limit to ~15 FPS
+            # Maintain fixed update frequency
             loop_time = time.time() - loop_start
-            if show_display:
-                target_loop_time = 0.066  # ~15 FPS with display
-            else:
-                target_loop_time = 0.033  # ~30 FPS in headless mode
             
-            if loop_time < target_loop_time:
-                time.sleep(target_loop_time - loop_time)
+            # Warn if processing is exceeding target loop time (can't maintain frequency)
+            if loop_time > target_loop_time:
+                if current_time - last_timing_warning > TIMING_WARNING_INTERVAL:
+                    print(f"\n⚠ WARNING: Processing too slow for {update_frequency_hz}Hz ({loop_time*1000:.0f}ms/loop, target {target_loop_time*1000:.0f}ms)")
+                    print(f"  Consider: Lower --hz frequency, use --no-display, or reduce camera resolution")
+                    last_timing_warning = current_time
+            else:
+                # Sleep to maintain exact frequency
+                sleep_time = target_loop_time - loop_time
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
     
     # Cleanup
     print("\nShutting down cameras...")
@@ -1029,6 +1085,20 @@ def main(argv=None):
     
     if show_display:
         cv2.destroyAllWindows()
+    
+    # Final statistics
+    total_time = time.time() - start_time
+    if total_time > 0 and update_count > 0:
+        actual_hz = update_count / total_time
+        print(f"\n{'='*70}")
+        print(f"Session Summary:")
+        print(f"  Runtime: {total_time:.1f}s")
+        print(f"  Updates: {update_count}")
+        print(f"  Target Frequency: {update_frequency_hz} Hz")
+        print(f"  Actual Frequency: {actual_hz:.2f} Hz")
+        print(f"  Accuracy: {(actual_hz/update_frequency_hz)*100:.1f}%")
+        print(f"{'='*70}")
+    
     print("Shutdown complete.")
     
 

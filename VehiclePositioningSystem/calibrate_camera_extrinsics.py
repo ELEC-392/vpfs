@@ -199,33 +199,73 @@ def main():
     print(f"\nCalibrating {len(cameras)} cameras...")
     print(f"Collecting {num_samples} samples per camera...\n")
     
+    # Warm up cameras (let auto-exposure settle, flush initial buffers)
+    print("Warming up cameras (auto-exposure settling)...", end=" ", flush=True)
+    for _ in range(10):
+        for cam_info in cameras:
+            cam_info["cap"].grab()
+        time.sleep(0.1)
+    print("✓\n")
+    
     # Collect samples
     camera_transforms = {cam["id"]: [] for cam in cameras}
+    sample_stats = {cam["id"]: {"success": 0, "failed": 0, "no_markers": 0} for cam in cameras}
     
     for sample_idx in range(num_samples):
         print(f"Sample {sample_idx + 1}/{num_samples}...", end=" ", flush=True)
         
         for cam_info in cameras:
-            # Capture frame
-            ret, frame = cam_info["cap"].read()
+            # CRITICAL: Flush old frames from buffer to get fresh capture
+            # This prevents reading stale buffered frames
+            for _ in range(2):  # Discard 2 old frames
+                cam_info["cap"].grab()
+            
+            # Capture fresh frame
+            ret = cam_info["cap"].grab()
+            if ret:
+                ret, frame = cam_info["cap"].retrieve()
+            else:
+                frame = None
+            
             if not ret or frame is None:
-                print(f"  Warning: Camera {cam_info['id']} capture failed")
+                sample_stats[cam_info["id"]]["failed"] += 1
                 continue
             
             # Detect markers
             detections = detect_markers(frame, DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
                                        cam_info["K"], cam_info["D"])
             
+            if len(detections) == 0:
+                sample_stats[cam_info["id"]]["no_markers"] += 1
+                continue
+            
             # Compute transform
             transform, error = compute_camera_to_world_transform(detections)
             
             if transform is not None:
                 camera_transforms[cam_info["id"]].append(transform)
+                sample_stats[cam_info["id"]]["success"] += 1
             else:
-                print(f"  Camera {cam_info['id']}: {error}")
+                # Error computing transform (missing marker 95 or 96)
+                sample_stats[cam_info["id"]]["no_markers"] += 1
         
         print("✓")
-        time.sleep(0.05)  # Small delay between samples
+        time.sleep(0.1)  # Delay between samples (allow cameras to capture fresh frames)
+    
+    # Print collection summary
+    print("\n" + "="*70)
+    print("Sample Collection Summary:")
+    print("="*70)
+    for cam_id in sorted(sample_stats.keys()):
+        stats = sample_stats[cam_id]
+        success_rate = (stats["success"] / num_samples) * 100 if num_samples > 0 else 0
+        print(f"Camera {cam_id}:")
+        print(f"  Successful: {stats['success']}/{num_samples} ({success_rate:.1f}%)")
+        if stats["failed"] > 0:
+            print(f"  Capture failed: {stats['failed']}")
+        if stats["no_markers"] > 0:
+            print(f"  No markers/missing ref markers: {stats['no_markers']}")
+    print()
     
     # Cleanup cameras
     for cam_info in cameras:
