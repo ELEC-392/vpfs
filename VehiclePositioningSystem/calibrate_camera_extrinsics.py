@@ -110,10 +110,17 @@ def compute_camera_to_world_transform(detections):
     """
     Compute camera pose in world frame using reference markers.
     
+    Returns the world->camera transform (camera's extrinsic matrix).
+    This describes where the camera is positioned and oriented in world coordinates.
+    
     World frame:
     - Origin at marker 95
     - X-axis along direction from marker 95 to marker 96
     - Planar (all markers on same plane)
+    
+    Returns:
+        (transform, error) where transform is a 4x4 matrix representing world->camera
+        This is the extrinsic calibration matrix for the camera.
     """
     ORIGIN_MARKER_ID = 95
     X_AXIS_MARKER_ID = 96
@@ -131,17 +138,18 @@ def compute_camera_to_world_transform(detections):
     if origin_detection is None:
         return None, "Origin marker 95 not detected"
     
-    # Get camera->origin transform
+    # Get camera->origin transform from detection
     cam_to_origin = det_to_transform_mat(origin_detection)
-    origin_to_cam = np.linalg.inv(cam_to_origin)
+    # Invert to get world->camera (since origin = world frame)
+    world_to_cam = np.linalg.inv(cam_to_origin)
     
     # If we also have marker 96, align X-axis
     if x_axis_detection is not None:
         cam_to_x_marker = det_to_transform_mat(x_axis_detection)
-        origin_to_x_marker = np.matmul(origin_to_cam, cam_to_x_marker)
+        world_to_x_marker = np.matmul(world_to_cam, cam_to_x_marker)
         
         # Get direction from origin to marker 96 in world frame
-        direction = origin_to_x_marker[:3, 3]
+        direction = world_to_x_marker[:3, 3]
         
         # Project to XY plane and compute angle
         angle = np.arctan2(direction[1], direction[0])
@@ -156,10 +164,10 @@ def compute_camera_to_world_transform(detections):
             [0,      0,     0, 1]
         ])
         
-        # Apply alignment
-        origin_to_cam = np.matmul(R_align, origin_to_cam)
+        # Apply alignment to world->camera transform
+        world_to_cam = np.matmul(R_align, world_to_cam)
     
-    return origin_to_cam, None
+    return world_to_cam, None
 
 
 def main():
@@ -343,15 +351,28 @@ def main():
         print("\nERROR: No cameras were successfully calibrated!")
         return
     
-    # Save to JSON
+    # Save to JSON with metadata about coordinate frames
     output_file = "camera_extrinsics.json"
+    output_data = {
+        "_metadata": {
+            "description": "Camera extrinsic calibration matrices",
+            "transform_type": "world_to_camera",
+            "explanation": "Each 'transform' matrix is a 4x4 world->camera transform (camera's pose in world frame). To transform detected markers from camera to world, INVERT this matrix first.",
+            "world_frame": "Origin at marker 95, X-axis toward marker 96, Z-axis perpendicular to marker plane",
+            "units": "meters"
+        }
+    }
+    output_data.update(calibration_results)
+    
     with open(output_file, 'w') as f:
-        json.dump(calibration_results, f, indent=2)
+        json.dump(output_data, f, indent=2)
     
     print(f"\n{'='*70}")
     print(f"✓ Calibration complete!")
     print(f"{'='*70}")
     print(f"\nCalibration saved to: {output_file}")
+    print(f"\nNote: Transforms are world->camera (camera's extrinsic pose).")
+    print(f"      Main script will automatically invert them for use.")
     print(f"\nTo use this calibration:")
     print(f"  python vehicle_position_system_multicam.py --extrinsics {output_file}")
     print()

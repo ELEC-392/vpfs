@@ -444,6 +444,12 @@ def compute_marker_positions_with_extrinsics(detections_by_camera, camera_extrin
     - No need to detect reference markers in every frame
     - Reduces noise and variability significantly
     
+    Transform chain:
+    - Calibration stores: world->camera (camera's pose in world frame)
+    - Detection gives: camera->tag (tag's pose in camera frame)
+    - We need to invert world->camera to get camera->world
+    - Then compute: world->tag = camera->world * camera->tag
+    
     Args:
         detections_by_camera: Dict mapping camera_id -> list of ArucoDetection objects
         camera_extrinsics: Dict mapping camera_id (as string) -> camera-to-world transform (4x4)
@@ -463,16 +469,21 @@ def compute_marker_positions_with_extrinsics(detections_by_camera, camera_extrin
             print(f"Warning: No extrinsic calibration for camera {camera_id}, skipping")
             continue
         
-        # Load transform from calibration
+        # Load transform from calibration (stored as world->camera)
         world_to_cam = np.array(camera_extrinsics[cam_id_str]["transform"])
+        
+        # CRITICAL: Invert to get camera->world
+        # The calibration stores where the camera is in world coordinates (world->camera)
+        # To transform tag detections from camera frame to world frame, we need the inverse
+        cam_to_world = np.linalg.inv(world_to_cam)
         
         # Transform each detection to world coordinates
         for det in detections:
             # Get camera->tag transform
             cam_to_tag = det_to_transform_mat(det)
             
-            # Compute world->tag = (world->cam) * (cam->tag)
-            world_to_tag = np.matmul(world_to_cam, cam_to_tag)
+            # Compute world->tag = (camera->world) * (camera->tag)
+            world_to_tag = np.matmul(cam_to_world, cam_to_tag)
             
             # Extract position
             position = world_to_tag[:3, 3]
@@ -737,7 +748,9 @@ def main(argv=None):
                 extrinsics_path = argv[idx + 1]
                 try:
                     with open(extrinsics_path, 'r') as f:
-                        camera_extrinsics = json.load(f)
+                        extrinsics_data = json.load(f)
+                    # Skip metadata field if present
+                    camera_extrinsics = {k: v for k, v in extrinsics_data.items() if not k.startswith('_')}
                     print(f"✓ Loaded camera extrinsics from: {extrinsics_path}")
                     print(f"  Using pre-calibrated transforms for {len(camera_extrinsics)} cameras")
                 except Exception as e:
