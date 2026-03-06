@@ -325,8 +325,9 @@ def compute_camera_pos(detections) -> ArrayLike | None:
             cam_to_tag = det_to_transform_mat(det)
             # map->tag (from known field layout)
             map_to_tag = tags[det.tag_id].mat
-            # map->camera for this detection
-            map_to_cam_i = np.matmul(map_to_tag, np.linalg.inv(cam_to_tag))
+            # Correct chain: p_tag = cam_to_tag @ map_to_cam @ p_world
+            #   → map_to_cam = inv(cam_to_tag) @ map_to_tag
+            map_to_cam_i = np.linalg.inv(cam_to_tag) @ map_to_tag
             candidates.append(map_to_cam_i)
 
             # Weight closer tags higher (you can swap to uniform weights = 1.0)

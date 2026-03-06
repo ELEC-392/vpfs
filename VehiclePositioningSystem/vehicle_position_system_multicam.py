@@ -444,11 +444,10 @@ def compute_world_positions(detections_by_camera):
         for det in detections:
             # cam_to_tag: transforms a point in camera frame into tag frame
             cam_to_tag = det_to_transform_mat(det)
-            # map_to_tag: transforms map frame → camera frame → tag frame
-            map_to_tag = map_to_cam @ cam_to_tag
-            # The tag's position in the map frame is the translation of the
-            # INVERSE transform (tag_to_map), NOT map_to_tag[:3,3].
-            # map_to_tag = [R | t], so inv = [R.T | -R.T @ t]
+            # Correct chain: p_tag = cam_to_tag @ map_to_cam @ p_world
+            #   so map_to_tag = cam_to_tag @ map_to_cam
+            # Tag origin in world = inv(map_to_tag)[:3,3] = -R.T @ t
+            map_to_tag = cam_to_tag @ map_to_cam
             R = map_to_tag[:3, :3]
             t = map_to_tag[:3, 3]
             tag_pos_world = -R.T @ t   # tag origin in map/world coordinates
