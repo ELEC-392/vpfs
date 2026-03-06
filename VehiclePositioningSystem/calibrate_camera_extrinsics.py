@@ -63,9 +63,25 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
 
 
 def detect_markers(frame, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, CAM_K, CAM_D):
-    """Detect ArUco markers in a frame and return detections."""
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    """
+    Detect ArUco markers in a frame and return detections.
     
+    IMPORTANT: Undistorts the image before detection for improved accuracy.
+    Wide-angle cameras (like Brio 4K) have significant barrel distortion that
+    affects corner detection and pose estimation if not corrected.
+    """
+    # Undistort image for more accurate corner detection
+    # Get optimal new camera matrix
+    h, w = frame.shape[:2]
+    newcameramatrix, roi = cv2.getOptimalNewCameraMatrix(CAM_K, CAM_D, (w, h), 1, (w, h))
+    
+    # Undistort
+    undistorted = cv2.undistort(frame, CAM_K, CAM_D, None, newcameramatrix)
+    
+    # Convert to grayscale
+    gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
+    
+    # Detect markers on undistorted image
     if DETECTOR is not None:
         corners, ids, _ = DETECTOR.detectMarkers(gray)
     else:
@@ -74,7 +90,8 @@ def detect_markers(frame, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, CAM_K, CAM_D):
     detections = []
     if ids is not None and len(ids) > 0:
         for i, tag_id in enumerate(ids.flatten()):
-            success, rvec, tvec = cv2.solvePnP(OBJ_POINTS, corners[i], CAM_K, CAM_D, 
+            # Use undistorted camera matrix with zero distortion for pose estimation
+            success, rvec, tvec = cv2.solvePnP(OBJ_POINTS, corners[i], newcameramatrix, None, 
                                                flags=cv2.SOLVEPNP_IPPE_SQUARE)
             if success:
                 detections.append(

@@ -206,16 +206,35 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
 
 
 def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, gpu_frame=None, gpu_gray=None):
-    """Process a single frame from one camera for ArUco detection."""
+    """
+    Process a single frame from one camera for ArUco detection.
+    
+    IMPORTANT: This function undistorts the image using camera intrinsics before detection.
+    This improves accuracy significantly, especially for wide-angle cameras.
+    
+    Process:
+    1. Undistort image using CAM_K and CAM_D
+    2. Detect ArUco markers on clean undistorted image
+    3. Compute pose using undistorted camera matrix (no distortion)
+    4. Draw overlays on undistorted frame
+    """
+    # Undistort image for more accurate corner detection and pose estimation
+    # Get optimal new camera matrix
+    h, w = frame.shape[:2]
+    newcameramatrix, roi = cv2.getOptimalNewCameraMatrix(CAM_K, CAM_D, (w, h), 1, (w, h))
+    
+    # Undistort the frame
+    undistorted = cv2.undistort(frame, CAM_K, CAM_D, None, newcameramatrix)
+    
     # GPU-accelerated grayscale conversion if available
     if USE_GPU and gpu_frame is not None and gpu_gray is not None:
-        gpu_frame.upload(frame)
+        gpu_frame.upload(undistorted)
         cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_BGR2GRAY, gpu_gray)
         gray = gpu_gray.download()
     else:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
     
-    # Detect ArUco markers
+    # Detect ArUco markers on undistorted image
     if DETECTOR is not None:
         corners, ids, _ = DETECTOR.detectMarkers(gray)
     else:
@@ -229,9 +248,9 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
         rvecs = []
         tvecs = []
         
-        # Calculate pose for each marker
+        # Calculate pose for each marker using undistorted camera matrix (no distortion)
         for corner in corners:
-            success, rvec, tvec = cv2.solvePnP(OBJ_POINTS, corner, CAM_K, CAM_D, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+            success, rvec, tvec = cv2.solvePnP(OBJ_POINTS, corner, newcameramatrix, None, flags=cv2.SOLVEPNP_IPPE_SQUARE)
             if success:
                 rvecs.append(rvec)
                 tvecs.append(tvec)
@@ -257,8 +276,9 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
         except:
             pass  # If we can't compute world positions, fall back to camera coords
     
-    # Overlay for visualization with world coordinates
-    frame = draw_aruco_overlays(frame, corners, ids, CAM_K, CAM_D, Defaults.TAG_SIZE, rvecs, tvecs, world_positions) if ids is not None else frame
+    # Overlay for visualization with world coordinates (use undistorted frame)
+    # Note: We use newcameramatrix for drawing since the image is now undistorted
+    display_frame = draw_aruco_overlays(undistorted, corners, ids, newcameramatrix, None, Defaults.TAG_SIZE, rvecs, tvecs, world_positions) if ids is not None else undistorted
 
     # Estimate camera pose from reference tags (if pre-defined positions exist)
     # Note: With the new relative positioning system, this is optional
@@ -269,13 +289,13 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
         pass  # Ignore if ref_tags not properly configured
     
     # Add camera name and position overlay
-    cv2.putText(frame, camera_name, (10, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 0), 3, cv2.LINE_AA)
+    cv2.putText(display_frame, camera_name, (10, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 0), 3, cv2.LINE_AA)
     if cameraPos is not None:
         cameraTranslation = cameraPos[0:3, 3].flatten()
         pos_text = f"Pos: X{cameraTranslation[0]:.2f} Y{cameraTranslation[1]:.2f} Z{cameraTranslation[2]:.2f}"
-        cv2.putText(frame, pos_text, (10, 90), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(display_frame, pos_text, (10, 90), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2, cv2.LINE_AA)
     
-    return frame, detections, cameraPos
+    return display_frame, detections, cameraPos
 
 
 def process_frame_only(frame, cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, frame_time, gpu_frame=None, gpu_gray=None):
