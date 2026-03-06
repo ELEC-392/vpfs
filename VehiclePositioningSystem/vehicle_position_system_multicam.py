@@ -1,56 +1,38 @@
 """
 Multi-Camera Vehicle Positioning System (VPS) runtime (ArUco-based).
 
-- Opens three cameras concurrently (Jetson via GStreamer).
-- Detects ArUco markers with OpenCV from all three cameras.
-- Establishes coordinate system from detected markers (no pre-defined positions needed).
-- Marker 95 is set as origin (0, 0, 0).
-- Marker 96 defines the X-axis direction.
-- Aggregates detections from all cameras for improved coverage.
+- Opens three cameras.
+- Detects ArUco markers (DICT_6X6_100) from all cameras.
+- Each camera independently computes its world pose from any reference markers
+  it sees (IDs 95-99), whose world positions are hardcoded in ref_tags.py.
+- Mobile-tag world positions from all cameras are averaged together.
 - Applies temporal smoothing to reduce position jitter.
 - Sends tag pose updates to the VPFS backend via vpfs_connector.
 - Shows live preview with marker overlays and FPS info for each camera.
 
-Recommended Workflow:
-    1. Calibrate camera extrinsics (do this once):
-       python calibrate_camera_extrinsics.py
-       
-    2. Run with calibration for stable multi-camera tracking:
-       python vehicle_position_system_multicam.py --extrinsics camera_extrinsics.json
-       
-    3. Or run without calibration (less stable, computes poses on-the-fly):
-       python vehicle_position_system_multicam.py
-
 Usage:
-    python vehicle_position_system_multicam.py                                # Dynamic pose estimation
-    python vehicle_position_system_multicam.py --extrinsics camera_extrinsics.json  # Pre-calibrated (recommended!)
-    python vehicle_position_system_multicam.py --no-display                   # Headless mode (faster)
-    python vehicle_position_system_multicam.py --calib <path>                 # Custom intrinsics file
+    python vehicle_position_system_multicam.py                    # Normal mode
+    python vehicle_position_system_multicam.py --no-display       # Headless (faster)
+    python vehicle_position_system_multicam.py --hz 5             # 5 Hz update rate
+    python vehicle_position_system_multicam.py --calib <path>     # Custom intrinsics
 
-Why Extrinsic Calibration Matters:
-- Without it: Each camera computes its own pose, errors compound when fusing
-- With it: Pre-computed stable transforms, much less variability
-- All markers are on a plane, so X/Y coordinates are most accurate
+Reference Markers (known world positions in ref_tags.py):
+    95 - origin (0, 0)
+    96 - (60 cm, 0)
+    97 - (60 cm, 70 cm)
+    98 - (0, 70 cm)
+    99 - centre
 
-Calibration:
-- Intrinsics: Attempts to load camera intrinsics from a JSON file (--calib path or
-  camera_calibration.json next to this script). Falls back to hardcoded Brio 4K intrinsics.
-- Extrinsics: Use calibrate_camera_extrinsics.py to compute camera-to-world transforms
-  
-Reference Markers (Map Corners):
-- IDs 95-99 define the play area/map
-- Position relative to marker 95 can be verified with a ruler
-- All should be visible to all cameras during extrinsic calibration
+Place all reference markers flat, oriented the same way as marker 95.
+The more reference markers visible to a camera, the more stable its pose estimate.
 
 Performance:
-- Terminal shows FPS and marker positions in centimeters
-- Temporal smoothing reduces jitter (adjust SMOOTHING_ALPHA in code if needed)
+- Terminal shows FPS and marker positions in centimetres.
+- Temporal smoothing reduces jitter (adjust SMOOTHING_ALPHA in code).
 
 Camera Recovery:
-- Automatic recovery from camera failures using USB device reset
-- System continues with remaining cameras if one fails
-- Aggressive cleanup prevents need for system reboot
-- If recovery fails, check USB connections and try restarting the script
+- Automatic recovery from camera failures using USB device reset.
+- System continues with remaining cameras if one fails.
 """
 
 import sys
@@ -428,141 +410,49 @@ def fuse_tag_poses_from_cameras(detections_by_camera):
     return fused_tag_poses
 
 
-def compute_marker_positions_with_extrinsics(detections_by_camera, camera_extrinsics):
+def compute_world_positions(detections_by_camera):
     """
-    Compute world-frame marker positions using stereo-style inter-camera extrinsics.
+    Compute world-frame marker positions using hardcoded reference tag coordinates.
 
-    Calibration file stores T_{camN -> cam0} for each secondary camera N.
-    Camera 0 is the reference; its detections are used directly.
+    For each camera:
+      1. Call compute_camera_pos() to estimate map->camera transform from any
+         reference markers (IDs 95-99) visible in that camera's frame.
+      2. Call compute_tag_poses() to project ALL detected markers into world space.
+    Then average world positions for tags seen by multiple cameras.
 
-    Algorithm
-    ---------
-    1. For each camera, convert every detection to a 3-D position in that
-       camera's coordinate frame  (= original tvec from solvePnP).
-    2. For secondary cameras, transform the position into Camera 0's frame
-       using the pre-calibrated T_{camN -> cam0}.
-    3. Collect all Camera-0-frame positions and fuse duplicates via a
-       distance-weighted average.
-    4. Establish the world frame:
-         • Marker 95 → origin  (0, 0, 0)
-         • Marker 96 → defines the +X axis
-       If marker 95 is not visible this frame, return an empty dict.
+    No external calibration file required. Works as long as at least one
+    reference marker is visible to each camera each frame.
 
     Args:
-        detections_by_camera : dict  camera_id -> list[ArucoDetection]
-        camera_extrinsics    : dict  loaded from camera_extrinsics.json
-                               keys "1", "2", …  each has a "transform" (4x4)
+        detections_by_camera: dict  camera_id -> list[ArucoDetection]
 
     Returns:
-        dict  tag_id -> (x_m, y_m, z_m)  in the marker-95 world frame
+        dict  tag_id -> (x_m, y_m, z_m)  in world coordinates (metres)
     """
-    ORIGIN_MARKER_ID = 95
-    X_AXIS_MARKER_ID = 96
-
-    # Pre-load secondary-camera transforms once per call
-    secondary_transforms = {}   # int cam_id -> 4x4 ndarray  T_{camN->cam0}
-    for key, val in camera_extrinsics.items():
-        if key.startswith("_"):       # skip metadata
-            continue
-        try:
-            cam_id = int(key)
-            if cam_id == 0:
-                continue             # Camera 0 is the reference
-            secondary_transforms[cam_id] = np.array(val["transform"])
-        except (ValueError, KeyError):
-            pass
-
-    # -----------------------------------------------------------------
-    # Step 1 & 2: Collect all detections expressed in Camera 0's frame
-    # -----------------------------------------------------------------
-    # cam0_frame_observations: tag_id -> list of (position_3d, weight)
-    cam0_frame_observations = {}
+    all_observations = {}  # tag_id -> list of (x, y, z)
 
     for camera_id, detections in detections_by_camera.items():
         if not detections:
             continue
 
-        for det in detections:
-            # Marker centre in this camera's coordinate frame.
-            # inv(T_{cam->marker})[:3, 3] is the camera origin in marker frame,
-            # but what we want is the MARKER origin in the CAMERA frame,
-            # which is just t_tc (the original tvec from solvePnP).
-            # ArucoDetection stores:
-            #   pose_R = R_ct  (camera->tag rotation)
-            #   pose_t = t_ct  = -R_ct @ t_tc  (camera origin in tag frame)
-            # So marker in camera frame = -pose_R.T @ pose_t = t_tc
-            R_ct = det.pose_R                          # 3x3
-            t_ct = det.pose_t.reshape(3)               # camera origin in tag frame
-            pos_in_cam = (-R_ct.T @ t_ct)              # marker centre in camera frame
+        # Estimate this camera's pose from visible reference markers
+        map_to_cam = compute_camera_pos(detections)
+        if map_to_cam is None:
+            continue  # no reference markers visible on this camera this frame
 
-            # Transform to Camera 0 frame
-            if camera_id == 0:
-                pos_cam0 = pos_in_cam
-            else:
-                T = secondary_transforms.get(camera_id)
-                if T is None:
-                    # No calibration for this camera — skip
-                    continue
-                pos_cam0 = (T @ np.append(pos_in_cam, 1.0))[:3]
+        # Project every detected marker into world/map coordinates
+        tag_world = compute_tag_poses(detections, map_to_cam)
+        for tag_id, pos in tag_world.items():
+            all_observations.setdefault(tag_id, []).append(pos)
 
-            # Weight: closer detections are more reliable
-            dist = float(np.linalg.norm(pos_in_cam))
-            weight = 1.0 / max(dist, 1e-3)
+    # Average across cameras for tags seen by more than one
+    result = {}
+    for tag_id, positions in all_observations.items():
+        arr = np.array(positions)
+        mean = arr.mean(axis=0)
+        result[tag_id] = (float(mean[0]), float(mean[1]), float(mean[2]))
 
-            tag_id = int(det.tag_id)
-            if tag_id not in cam0_frame_observations:
-                cam0_frame_observations[tag_id] = []
-            cam0_frame_observations[tag_id].append((pos_cam0, weight))
-
-    if not cam0_frame_observations:
-        return {}
-
-    # -----------------------------------------------------------------
-    # Step 3: Fuse multiple observations → single 3-D position per tag
-    # -----------------------------------------------------------------
-    cam0_positions = {}    # tag_id -> np.ndarray (3,)
-    for tag_id, obs in cam0_frame_observations.items():
-        positions = np.array([o[0] for o in obs])
-        weights   = np.array([o[1] for o in obs])
-        wsum = np.sum(weights)
-        cam0_positions[tag_id] = np.sum(positions * weights[:, np.newaxis], axis=0) / wsum
-
-    # -----------------------------------------------------------------
-    # Step 4: Establish world frame from marker 95 (origin) and 96 (+X)
-    # -----------------------------------------------------------------
-    if ORIGIN_MARKER_ID not in cam0_positions:
-        return {}   # Cannot establish world frame without the origin marker
-
-    origin = cam0_positions[ORIGIN_MARKER_ID]
-
-    # Build rotation that maps Camera-0 frame to world frame
-    if X_AXIS_MARKER_ID in cam0_positions:
-        x_vec = cam0_positions[X_AXIS_MARKER_ID] - origin
-        x_len = np.linalg.norm(x_vec)
-        if x_len > 1e-4:
-            x_hat = x_vec / x_len
-            # Build an orthonormal frame: X = x_hat, Y = X × Z (or X × up), Z = ?
-            # Use a "least bad" up vector to form Z then recompute Y
-            up = np.array([0.0, -1.0, 0.0])  # Camera 0's -Y is roughly "up" (ceiling mount)
-            if abs(np.dot(x_hat, up)) > 0.9:  # nearly parallel – choose another up
-                up = np.array([0.0, 0.0, 1.0])
-            z_hat = np.cross(x_hat, up)
-            z_hat /= np.linalg.norm(z_hat)
-            y_hat = np.cross(z_hat, x_hat)
-            # R_world_from_cam0: columns are basis vectors expressed in cam0 frame
-            R_wc = np.column_stack([x_hat, y_hat, z_hat])   # 3×3
-        else:
-            R_wc = np.eye(3)
-    else:
-        R_wc = np.eye(3)    # No marker 96 — use Camera 0 orientation as-is
-
-    # Translate then rotate every fused position
-    marker_positions = {}
-    for tag_id, pos_cam0 in cam0_positions.items():
-        p_world = R_wc.T @ (pos_cam0 - origin)
-        marker_positions[tag_id] = (float(p_world[0]), float(p_world[1]), float(p_world[2]))
-
-    return marker_positions
+    return result
 
 
 def compute_relative_marker_positions(detections_by_camera):
@@ -769,12 +659,10 @@ def main(argv=None):
     Command-line Arguments:
     - --hz <frequency> : Update frequency in Hz (default: 10, recommended: 1-20)
     - --no-display : Run in headless mode (no visual windows, faster performance)
-    - --extrinsics <path> : Path to camera extrinsics calibration file (recommended!)
     - --calib <path> : Path to camera intrinsics calibration file
     """
     # Parse command-line flags
     show_display = True
-    camera_extrinsics = None
     update_frequency_hz = 10  # Default 10Hz update rate
     
     if argv:
@@ -795,26 +683,6 @@ def main(argv=None):
                     print(f"Warning: Invalid frequency value, using default 10Hz")
                     update_frequency_hz = 10
         
-        # Load extrinsic calibration if provided
-        if '--extrinsics' in argv:
-            idx = argv.index('--extrinsics')
-            if idx + 1 < len(argv):
-                extrinsics_path = argv[idx + 1]
-                try:
-                    with open(extrinsics_path, 'r') as f:
-                        extrinsics_data = json.load(f)
-                    # Skip metadata field if present
-                    camera_extrinsics = {k: v for k, v in extrinsics_data.items() if not k.startswith('_')}
-                    print(f"✓ Loaded camera extrinsics from: {extrinsics_path}")
-                    print(f"  Using pre-calibrated transforms for {len(camera_extrinsics)} cameras")
-                except Exception as e:
-                    print(f"✗ Failed to load extrinsics from {extrinsics_path}: {e}")
-                    print("  Falling back to dynamic pose estimation")
-        else:
-            print("\nWARNING: No extrinsic calibration provided.")
-            print("  For stable results, run: python calibrate_camera_extrinsics.py")
-            print("  Then use: --extrinsics camera_extrinsics.json\n")
-    
     # Display system configuration
     target_loop_time = 1.0 / update_frequency_hz
     print(f"\n{'='*70}")
@@ -822,7 +690,7 @@ def main(argv=None):
     print(f"{'='*70}")
     print(f"Update Frequency: {update_frequency_hz} Hz (period: {target_loop_time*1000:.1f}ms)")
     print(f"Display Mode: {'Visual' if show_display else 'Headless (faster)'}")
-    print(f"Extrinsic Cal: {'✓ Loaded' if camera_extrinsics else '✗ Not loaded (less stable)'}")
+    print(f"Reference Tags: hardcoded world positions from ref_tags.py")
     print(f"{'='*70}\n")
     
     # --- ArUco setup ---
@@ -1058,14 +926,8 @@ def main(argv=None):
                 print(f"\n[Stats] Updates: {update_count}, Actual: {actual_hz:.2f}Hz (target: {update_frequency_hz}Hz)")
                 last_stats_print = current_time
             
-            # Compute relative marker positions
-            # Use pre-calibrated extrinsics if available (much more stable!)
-            if camera_extrinsics is not None:
-                raw_marker_positions = compute_marker_positions_with_extrinsics(
-                    all_detections_by_camera, camera_extrinsics)
-            else:
-                # Fallback: compute on-the-fly (marker 95 as origin, 96 along X-axis)
-                raw_marker_positions = compute_relative_marker_positions(all_detections_by_camera)
+            # Compute world-frame marker positions using ref_tags.py coordinates
+            raw_marker_positions = compute_world_positions(all_detections_by_camera)
             
             # Apply temporal smoothing to reduce jitter/fluctuations
             all_marker_positions = {}
