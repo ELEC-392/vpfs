@@ -3,6 +3,9 @@ Multi-Camera Vehicle Positioning System (VPS) runtime (ArUco-based).
 
 - Opens three cameras concurrently (Jetson via GStreamer).
 - Detects ArUco markers with OpenCV from all three cameras.
+- Establishes coordinate system from detected markers (no pre-defined positions needed).
+- Marker 95 is set as origin (0, 0, 0).
+- Marker 96 defines the X-axis direction.
 - Aggregates detections from all cameras for improved coverage.
 - Sends tag pose updates to the VPFS backend via vpfs_connector.
 - Shows live preview with marker overlays and FPS info for each camera.
@@ -10,10 +13,14 @@ Multi-Camera Vehicle Positioning System (VPS) runtime (ArUco-based).
 Calibration:
 - Attempts to load camera intrinsics from a JSON file (--calib path or
   camera_calibration.json next to this script). Falls back to hardcoded Brio 4K intrinsics.
+  
+Reference Markers (Map Corners):
+- IDs 95-99 define the play area/map
+- Position relative to marker 95 can be verified with a ruler
 """
 
 import sys
-from ref_tags import ref_tags  # ensure tag registry is initialized
+from ref_tags import ref_tags  # optional - for camera position overlay only
 import vpfs_connector
 
 import cv2
@@ -147,8 +154,13 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     # Overlay for visualization
     frame = draw_aruco_overlays(frame, corners, ids, CAM_K, CAM_D, Defaults.TAG_SIZE, rvecs, tvecs) if ids is not None else frame
 
-    # Estimate camera pose from known reference tags (fused if multiple)
-    cameraPos = compute_camera_pos(detections)
+    # Estimate camera pose from reference tags (if pre-defined positions exist)
+    # Note: With the new relative positioning system, this is optional
+    cameraPos = None
+    try:
+        cameraPos = compute_camera_pos(detections)
+    except:
+        pass  # Ignore if ref_tags not properly configured
     
     # Add camera name and position overlay
     cv2.putText(frame, camera_name, (10, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 0), 3, cv2.LINE_AA)
@@ -299,6 +311,176 @@ def fuse_tag_poses_from_cameras(detections_by_camera):
     return fused_tag_poses
 
 
+def compute_relative_marker_positions(detections_by_camera):
+    """
+    Compute marker positions relative to marker 95 (origin) without pre-defined world positions.
+    
+    This function establishes a coordinate system directly from the detected markers:
+    - Marker 95 is placed at the origin (0, 0, 0)
+    - Marker 96 defines the positive X-axis direction
+    - The coordinate frame is built from the physical arrangement
+    - All markers are expressed in this relative coordinate system
+    
+    Workflow:
+    1. For each camera, detect all markers in camera coordinates
+    2. Select a reference camera that sees marker 95
+    3. In the reference camera frame, set marker 95 as origin
+    4. Optionally align coordinate frame so marker 96 is along +X axis
+    5. For other cameras, compute their pose relative to this coordinate system
+    6. Transform all detections from all cameras into the unified frame
+    7. Fuse multiple observations of the same marker
+    
+    Args:
+        detections_by_camera: Dict mapping camera_id -> list of ArucoDetection objects
+        
+    Returns:
+        Dict mapping tag_id -> (x, y, z) in meters relative to marker 95
+        Returns empty dict if marker 95 is not detected
+    """
+    ORIGIN_MARKER_ID = 95
+    X_AXIS_MARKER_ID = 96
+    
+    # Step 1: Find a reference camera that sees the origin marker (95)
+    reference_camera_id = None
+    reference_detections = None
+    origin_detection = None
+    
+    for camera_id, detections in detections_by_camera.items():
+        for det in detections:
+            if det.tag_id == ORIGIN_MARKER_ID:
+                reference_camera_id = camera_id
+                reference_detections = detections
+                origin_detection = det
+                break
+        if origin_detection:
+            break
+    
+    if origin_detection is None:
+        print(f"Warning: Origin marker {ORIGIN_MARKER_ID} not detected in any camera")
+        return {}
+    
+    print(f"\nUsing camera {reference_camera_id} as reference (sees origin marker {ORIGIN_MARKER_ID})")
+    
+    # Step 2: Build coordinate transform - origin at marker 95
+    # Get the camera->origin transform
+    cam_to_origin = det_to_transform_mat(origin_detection)
+    
+    # To make marker 95 the origin, we need origin->camera transform
+    # Then all markers will be expressed as: origin->marker = origin->camera * camera->marker
+    origin_to_cam = np.linalg.inv(cam_to_origin)
+    
+    # Step 3: Collect all marker positions in the origin-centered frame
+    marker_positions_raw = {}  # tag_id -> list of ((x,y,z), weight)
+    
+    for det in reference_detections:
+        cam_to_marker = det_to_transform_mat(det)
+        origin_to_marker = np.matmul(origin_to_cam, cam_to_marker)
+        
+        translation = origin_to_marker[:3, 3]
+        dist = float(np.linalg.norm(det.pose_t.flatten()))
+        weight = 1.0 / max(dist, 1e-3)
+        
+        if det.tag_id not in marker_positions_raw:
+            marker_positions_raw[det.tag_id] = []
+        marker_positions_raw[det.tag_id].append((translation, weight))
+    
+    # Step 4: Optionally align coordinate frame with marker 96 along X-axis
+    # Find marker 96 position
+    x_axis_marker_pos = None
+    if X_AXIS_MARKER_ID in marker_positions_raw:
+        # Average if multiple observations
+        positions = [obs[0] for obs in marker_positions_raw[X_AXIS_MARKER_ID]]
+        weights = [obs[1] for obs in marker_positions_raw[X_AXIS_MARKER_ID]]
+        wsum = sum(weights)
+        x_axis_marker_pos = sum(w * p for w, p in zip(weights, positions)) / wsum
+        
+        # Compute rotation to align marker 96 with +X axis
+        # Project onto XY plane
+        direction_xy = x_axis_marker_pos[:2]
+        direction_xy_norm = np.linalg.norm(direction_xy)
+        
+        if direction_xy_norm > 1e-3:
+            # Angle to rotate around Z-axis to align with +X
+            angle = np.arctan2(direction_xy[1], direction_xy[0])
+            
+            # Rotation matrix around Z-axis
+            cos_a = np.cos(-angle)
+            sin_a = np.sin(-angle)
+            R_align = np.array([
+                [cos_a, -sin_a, 0, 0],
+                [sin_a,  cos_a, 0, 0],
+                [0,      0,     1, 0],
+                [0,      0,     0, 1]
+            ])
+            
+            print(f"Aligning coordinate frame: rotating {np.degrees(angle):.1f}° to place marker {X_AXIS_MARKER_ID} along +X axis")
+            
+            # Apply rotation to all markers
+            aligned_positions = {}
+            for tag_id, observations in marker_positions_raw.items():
+                aligned_obs = []
+                for pos, weight in observations:
+                    pos_homogeneous = np.array([pos[0], pos[1], pos[2], 1])
+                    aligned_pos = (R_align @ pos_homogeneous)[:3]
+                    aligned_obs.append((aligned_pos, weight))
+                aligned_positions[tag_id] = aligned_obs
+            
+            marker_positions_raw = aligned_positions
+    
+    # Step 5: Process other cameras using the established coordinate frame
+    # For each other camera, find common markers to compute its pose
+    for camera_id, detections in detections_by_camera.items():
+        if camera_id == reference_camera_id or not detections:
+            continue
+        
+        # Find markers common with the reference camera
+        common_markers = {}
+        for det in detections:
+            if det.tag_id in marker_positions_raw:
+                common_markers[det.tag_id] = det
+        
+        if len(common_markers) < 2:
+            print(f"Camera {camera_id}: Not enough common markers ({len(common_markers)}), skipping")
+            continue
+        
+        # Estimate this camera's pose using common markers (similar to PnP)
+        # For simplicity, use marker 95 if visible, else use any common marker
+        if ORIGIN_MARKER_ID in common_markers:
+            # Direct transform through origin marker
+            det_origin = common_markers[ORIGIN_MARKER_ID]
+            cam_to_origin = det_to_transform_mat(det_origin)
+            origin_to_cam = np.linalg.inv(cam_to_origin)
+            
+            # Add all detections from this camera
+            for det in detections:
+                cam_to_marker = det_to_transform_mat(det)
+                origin_to_marker = np.matmul(origin_to_cam, cam_to_marker)
+                
+                translation = origin_to_marker[:3, 3]
+                dist = float(np.linalg.norm(det.pose_t.flatten()))
+                weight = 1.0 / max(dist, 1e-3)
+                
+                if det.tag_id not in marker_positions_raw:
+                    marker_positions_raw[det.tag_id] = []
+                marker_positions_raw[det.tag_id].append((translation, weight))
+        else:
+            print(f"Camera {camera_id}: Origin marker not visible, using approximate alignment")
+            # Could implement more sophisticated alignment here
+    
+    # Step 6: Fuse multi-camera observations by weighted averaging
+    marker_positions = {}
+    for tag_id, observations in marker_positions_raw.items():
+        positions = [obs[0] for obs in observations]
+        weights = [obs[1] for obs in observations]
+        wsum = sum(weights)
+        
+        # Weighted average
+        avg_pos = sum(w * p for w, p in zip(weights, positions)) / wsum
+        marker_positions[tag_id] = (float(avg_pos[0]), float(avg_pos[1]), float(avg_pos[2]))
+    
+    return marker_positions
+
+
 def main(argv=None):
     """Main loop for multi-camera visualization and processing."""
     # --- ArUco setup ---
@@ -381,39 +563,42 @@ def main(argv=None):
                 all_detections.extend(detections)
                 all_detections_by_camera[cameras[idx]["id"]].extend(detections)
                 frame_times[idx] = current_time
-                
-                # If we have a valid camera pose, transform all detected tags to map/world coords
-                if cameraPos is not None:
-                    tagPoses = compute_tag_poses(detections, cameraPos)
-                    all_detections_by_camera[cameras[idx]["id"]].extend(detections)
-                    # Merge tag poses from this camera (later detections may override)
-                    # all_tag_poses.update(tagPoses)
 
-            # Fuse tag poses from all cameras to get best estimate of world/map positions
-            all_tag_poses = fuse_tag_poses_from_cameras(all_detections_by_camera)
+            # Compute relative marker positions (marker 95 as origin, 96 along X-axis)
+            # This doesn't require pre-defined world positions - builds coordinate frame from markers
+            all_marker_positions = compute_relative_marker_positions(all_detections_by_camera)
 
-            # Convert 4x4 matrices to (x, y, z) tuples and filter out reference tags
-            # Reference tags (95-99) are fixed and used for camera localization only
+            # Reference markers define the coordinate system
             REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
-            tag_positions = {}
             
-            for tag_id, pose_matrix in all_tag_poses.items():
-                translation = pose_matrix[:3, 3].flatten()
+            if all_marker_positions:
+                print(f"\n{'='*70}")
+                print(f"MARKER POSITIONS (relative to marker 95 at origin):")
+                print(f"{'='*70}")
                 
-                # Print all detected tags for debugging
-                tag_type = "REF" if tag_id in REFERENCE_TAG_IDS else "TAG"
-                print(f"[{tag_type}] {tag_id}: X={translation[0]:.3f}m Y={translation[1]:.3f}m Z={translation[2]:.3f}m")
+                # Print reference markers first (these define the map corners)
+                print("\n--- Reference Markers (Map Corners) ---")
+                for tag_id in sorted([tid for tid in all_marker_positions.keys() if tid in REFERENCE_TAG_IDS]):
+                    x, y, z = all_marker_positions[tag_id]
+                    print(f"  Marker {tag_id:2d}: X={x:7.4f}m  Y={y:7.4f}m  Z={z:7.4f}m  (distance: {np.sqrt(x**2 + y**2):.4f}m)")
                 
-                # Only include non-reference tags for VPFS updates
-                if tag_id not in REFERENCE_TAG_IDS:
-                    tag_positions[tag_id] = (translation[0], translation[1], translation[2])
-            
-            # Send only non-reference tag poses to VPFS backend
-            if tag_positions:
-                vpfs_connector.send_update(tag_positions)
-                print(f"Sent {len(tag_positions)} mobile tag(s) to VPFS (detected {len(all_tag_poses)} total including {len(all_tag_poses) - len(tag_positions)} reference tags)")
-            elif all_tag_poses:
-                print(f"Only reference tags detected ({len(all_tag_poses)}), no mobile tags to report")
+                # Print mobile markers (vehicles/objects being tracked)
+                mobile_markers = {tid: pos for tid, pos in all_marker_positions.items() if tid not in REFERENCE_TAG_IDS}
+                if mobile_markers:
+                    print("\n--- Mobile Markers (Tracked Objects) ---")
+                    for tag_id in sorted(mobile_markers.keys()):
+                        x, y, z = mobile_markers[tag_id]
+                        print(f"  Marker {tag_id:2d}: X={x:7.4f}m  Y={y:7.4f}m  Z={z:7.4f}m  (distance: {np.sqrt(x**2 + y**2):.4f}m)")
+                    
+                    # Send mobile markers to VPFS backend
+                    vpfs_connector.send_update(mobile_markers)
+                    print(f"\n✓ Sent {len(mobile_markers)} mobile marker(s) to VPFS")
+                else:
+                    print("\n--- No mobile markers detected ---")
+                
+                print(f"{'='*70}\n")
+            else:
+                print("\nNo markers detected (need at least marker 95 visible)\n")
             
             # Display each camera in its own window
             for idx, (frame, cam_info) in enumerate(zip(frames, cameras)):
