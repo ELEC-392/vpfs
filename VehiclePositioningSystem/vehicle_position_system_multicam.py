@@ -11,18 +11,36 @@ Multi-Camera Vehicle Positioning System (VPS) runtime (ArUco-based).
 - Sends tag pose updates to the VPFS backend via vpfs_connector.
 - Shows live preview with marker overlays and FPS info for each camera.
 
+Recommended Workflow:
+    1. Calibrate camera extrinsics (do this once):
+       python calibrate_camera_extrinsics.py
+       
+    2. Run with calibration for stable multi-camera tracking:
+       python vehicle_position_system_multicam.py --extrinsics camera_extrinsics.json
+       
+    3. Or run without calibration (less stable, computes poses on-the-fly):
+       python vehicle_position_system_multicam.py
+
 Usage:
-    python vehicle_position_system_multicam.py                # Normal mode with display
-    python vehicle_position_system_multicam.py --no-display   # Headless mode (faster)
-    python vehicle_position_system_multicam.py --calib <path> # Custom calibration file
+    python vehicle_position_system_multicam.py                                # Dynamic pose estimation
+    python vehicle_position_system_multicam.py --extrinsics camera_extrinsics.json  # Pre-calibrated (recommended!)
+    python vehicle_position_system_multicam.py --no-display                   # Headless mode (faster)
+    python vehicle_position_system_multicam.py --calib <path>                 # Custom intrinsics file
+
+Why Extrinsic Calibration Matters:
+- Without it: Each camera computes its own pose, errors compound when fusing
+- With it: Pre-computed stable transforms, much less variability
+- All markers are on a plane, so X/Y coordinates are most accurate
 
 Calibration:
-- Attempts to load camera intrinsics from a JSON file (--calib path or
+- Intrinsics: Attempts to load camera intrinsics from a JSON file (--calib path or
   camera_calibration.json next to this script). Falls back to hardcoded Brio 4K intrinsics.
+- Extrinsics: Use calibrate_camera_extrinsics.py to compute camera-to-world transforms
   
 Reference Markers (Map Corners):
 - IDs 95-99 define the play area/map
 - Position relative to marker 95 can be verified with a ruler
+- All should be visible to all cameras during extrinsic calibration
 
 Performance:
 - Terminal shows FPS and marker positions in centimeters
@@ -43,6 +61,7 @@ import cv2
 import numpy as np
 import time
 import os
+import json
 import signal
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
@@ -396,6 +415,71 @@ def fuse_tag_poses_from_cameras(detections_by_camera):
     return fused_tag_poses
 
 
+def compute_marker_positions_with_extrinsics(detections_by_camera, camera_extrinsics):
+    """
+    Compute marker positions using pre-calibrated camera extrinsics.
+    
+    This approach is much more stable than computing poses on-the-fly because:
+    - Camera-to-world transforms are pre-computed from many samples
+    - No need to detect reference markers in every frame
+    - Reduces noise and variability significantly
+    
+    Args:
+        detections_by_camera: Dict mapping camera_id -> list of ArucoDetection objects
+        camera_extrinsics: Dict mapping camera_id (as string) -> camera-to-world transform (4x4)
+        
+    Returns:
+        Dict mapping tag_id -> (x, y, z) in meters relative to world frame
+    """
+    marker_observations = {}  # tag_id -> list of ((x,y,z), weight)
+    
+    for camera_id, detections in detections_by_camera.items():
+        if not detections:
+            continue
+        
+        # Get pre-computed camera-to-world transform
+        cam_id_str = str(camera_id)
+        if cam_id_str not in camera_extrinsics:
+            print(f"Warning: No extrinsic calibration for camera {camera_id}, skipping")
+            continue
+        
+        # Load transform from calibration
+        world_to_cam = np.array(camera_extrinsics[cam_id_str]["transform"])
+        
+        # Transform each detection to world coordinates
+        for det in detections:
+            # Get camera->tag transform
+            cam_to_tag = det_to_transform_mat(det)
+            
+            # Compute world->tag = (world->cam) * (cam->tag)
+            world_to_tag = np.matmul(world_to_cam, cam_to_tag)
+            
+            # Extract position
+            position = world_to_tag[:3, 3]
+            
+            # Weight based on distance (closer = more reliable)
+            dist = float(np.linalg.norm(det.pose_t.flatten()))
+            weight = 1.0 / max(dist, 1e-3)
+            
+            if det.tag_id not in marker_observations:
+                marker_observations[det.tag_id] = []
+            marker_observations[det.tag_id].append((position, weight))
+    
+    # Fuse observations using weighted average
+    marker_positions = {}
+    for tag_id, observations in marker_observations.items():
+        positions = np.array([obs[0] for obs in observations])
+        weights = np.array([obs[1] for obs in observations])
+        
+        # Weighted average
+        wsum = np.sum(weights)
+        avg_pos = np.sum(positions * weights[:, np.newaxis], axis=0) / wsum
+        
+        marker_positions[tag_id] = (float(avg_pos[0]), float(avg_pos[1]), float(avg_pos[2]))
+    
+    return marker_positions
+
+
 def compute_relative_marker_positions(detections_by_camera):
     """
     Compute marker positions relative to marker 95 (origin) without pre-defined world positions.
@@ -593,13 +677,35 @@ def main(argv=None):
     
     Command-line Arguments:
     - --no-display : Run in headless mode (no visual windows, faster performance)
-    - --calib <path> : Path to camera calibration file
+    - --extrinsics <path> : Path to camera extrinsics calibration file (recommended!)
+    - --calib <path> : Path to camera intrinsics calibration file
     """
     # Parse command-line flags
     show_display = True
-    if argv and '--no-display' in argv:
-        show_display = False
-        print("Running in headless mode (no visual display)")
+    camera_extrinsics = None
+    
+    if argv:
+        if '--no-display' in argv:
+            show_display = False
+            print("Running in headless mode (no visual display)")
+        
+        # Load extrinsic calibration if provided
+        if '--extrinsics' in argv:
+            idx = argv.index('--extrinsics')
+            if idx + 1 < len(argv):
+                extrinsics_path = argv[idx + 1]
+                try:
+                    with open(extrinsics_path, 'r') as f:
+                        camera_extrinsics = json.load(f)
+                    print(f"✓ Loaded camera extrinsics from: {extrinsics_path}")
+                    print(f"  Using pre-calibrated transforms for {len(camera_extrinsics)} cameras")
+                except Exception as e:
+                    print(f"✗ Failed to load extrinsics from {extrinsics_path}: {e}")
+                    print("  Falling back to dynamic pose estimation")
+        else:
+            print("\nWARNING: No extrinsic calibration provided.")
+            print("  For stable results, run: python calibrate_camera_extrinsics.py")
+            print("  Then use: --extrinsics camera_extrinsics.json\n")
     
     # --- ArUco setup ---
     aruco = cv2.aruco
@@ -813,9 +919,14 @@ def main(argv=None):
                     print(f"\n[FPS: {fps:.1f}] Processing {len(cameras)} cameras...")
                 last_fps_print = current_time
             
-            # Compute relative marker positions (marker 95 as origin, 96 along X-axis)
-            # This doesn't require pre-defined world positions - builds coordinate frame from markers
-            raw_marker_positions = compute_relative_marker_positions(all_detections_by_camera)
+            # Compute relative marker positions
+            # Use pre-calibrated extrinsics if available (much more stable!)
+            if camera_extrinsics is not None:
+                raw_marker_positions = compute_marker_positions_with_extrinsics(
+                    all_detections_by_camera, camera_extrinsics)
+            else:
+                # Fallback: compute on-the-fly (marker 95 as origin, 96 along X-axis)
+                raw_marker_positions = compute_relative_marker_positions(all_detections_by_camera)
             
             # Apply temporal smoothing to reduce jitter/fluctuations
             all_marker_positions = {}
