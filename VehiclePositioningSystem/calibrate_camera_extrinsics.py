@@ -65,34 +65,32 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
 def detect_markers(frame, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, CAM_K, CAM_D):
     """
     Detect ArUco markers in a frame and return detections.
-    
-    IMPORTANT: Undistorts the image before detection for improved accuracy.
-    Wide-angle cameras (like Brio 4K) have significant barrel distortion that
-    affects corner detection and pose estimation if not corrected.
+
+    Distortion handling strategy:
+    - Detect corners on the ORIGINAL grayscale image.
+    - Undistort only the detected corner points with cv2.undistortPoints.
+      This correctly removes lens distortion from the corner coordinates
+      without altering the camera matrix (CAM_K), avoiding the focal-length
+      shrinkage that getOptimalNewCameraMatrix(alpha=1) causes for cameras
+      with large distortion coefficients (like Brio 4K).
     """
-    # Undistort image for more accurate corner detection
-    # Get optimal new camera matrix
-    h, w = frame.shape[:2]
-    newcameramatrix, roi = cv2.getOptimalNewCameraMatrix(CAM_K, CAM_D, (w, h), 1, (w, h))
-    
-    # Undistort
-    undistorted = cv2.undistort(frame, CAM_K, CAM_D, None, newcameramatrix)
-    
-    # Convert to grayscale
-    gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
-    
-    # Detect markers on undistorted image
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
     if DETECTOR is not None:
         corners, ids, _ = DETECTOR.detectMarkers(gray)
     else:
         corners, ids, _ = cv2.aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
-    
+
     detections = []
     if ids is not None and len(ids) > 0:
         for i, tag_id in enumerate(ids.flatten()):
-            # Use undistorted camera matrix with zero distortion for pose estimation
-            success, rvec, tvec = cv2.solvePnP(OBJ_POINTS, corners[i], newcameramatrix, None, 
-                                               flags=cv2.SOLVEPNP_IPPE_SQUARE)
+            # Undistort corner points only — preserves original CAM_K for solvePnP
+            pts = corners[i].reshape(-1, 1, 2).astype(np.float32)
+            pts_undistorted = cv2.undistortPoints(pts, CAM_K, CAM_D, P=CAM_K)
+            success, rvec, tvec = cv2.solvePnP(
+                OBJ_POINTS, pts_undistorted, CAM_K, None,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE
+            )
             if success:
                 detections.append(
                     ArucoDetection(
@@ -102,7 +100,7 @@ def detect_markers(frame, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, CAM_K, CAM_D):
                         corners=corners[i]
                     )
                 )
-    
+
     return detections
 
 

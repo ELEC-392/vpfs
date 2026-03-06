@@ -209,32 +209,22 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     """
     Process a single frame from one camera for ArUco detection.
     
-    IMPORTANT: This function undistorts the image using camera intrinsics before detection.
-    This improves accuracy significantly, especially for wide-angle cameras.
-    
-    Process:
-    1. Undistort image using CAM_K and CAM_D
-    2. Detect ArUco markers on clean undistorted image
-    3. Compute pose using undistorted camera matrix (no distortion)
-    4. Draw overlays on undistorted frame
+    Distortion handling strategy:
+    - Detect ArUco corners on the ORIGINAL (distorted) grayscale image.
+    - Undistort only the detected corner points using cv2.undistortPoints.
+      This preserves the original camera matrix (CAM_K) for solvePnP and
+      avoids the focal-length shrinkage that getOptimalNewCameraMatrix(alpha=1)
+      introduces for lenses with large distortion coefficients.
+    - Full-image undistortion (alpha=0) is only done for final display.
     """
-    # Undistort image for more accurate corner detection and pose estimation
-    # Get optimal new camera matrix
-    h, w = frame.shape[:2]
-    newcameramatrix, roi = cv2.getOptimalNewCameraMatrix(CAM_K, CAM_D, (w, h), 1, (w, h))
-    
-    # Undistort the frame
-    undistorted = cv2.undistort(frame, CAM_K, CAM_D, None, newcameramatrix)
-    
-    # GPU-accelerated grayscale conversion if available
+    # --- Detection on original image ---
     if USE_GPU and gpu_frame is not None and gpu_gray is not None:
-        gpu_frame.upload(undistorted)
+        gpu_frame.upload(frame)
         cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_BGR2GRAY, gpu_gray)
         gray = gpu_gray.download()
     else:
-        gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
-    
-    # Detect ArUco markers on undistorted image
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
     if DETECTOR is not None:
         corners, ids, _ = DETECTOR.detectMarkers(gray)
     else:
@@ -243,19 +233,21 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     rvecs, tvecs = None, None
     detections = []
     if ids is not None and len(ids) > 0:
-        # Pose estimation for each marker using cv2.solvePnP
-        # Use pre-computed objPoints to avoid re-allocation
         rvecs = []
         tvecs = []
-        
-        # Calculate pose for each marker using undistorted camera matrix (no distortion)
         for corner in corners:
-            success, rvec, tvec = cv2.solvePnP(OBJ_POINTS, corner, newcameramatrix, None, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+            # Undistort corner points only (shape: 1x4x2 -> 4x1x2 for undistortPoints)
+            pts = corner.reshape(-1, 1, 2).astype(np.float32)
+            pts_undistorted = cv2.undistortPoints(pts, CAM_K, CAM_D, P=CAM_K)
+            # solvePnP with original CAM_K and no distortion (points already corrected)
+            success, rvec, tvec = cv2.solvePnP(
+                OBJ_POINTS, pts_undistorted, CAM_K, None,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE
+            )
             if success:
                 rvecs.append(rvec)
                 tvecs.append(tvec)
-        
-        # Build adapter objects to feed into utils
+
         for i, tag_id in enumerate(ids.flatten()):
             detections.append(
                 ArucoDetection(
@@ -266,35 +258,36 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
                 )
             )
 
-    # Compute world coordinates for this camera's view (for overlay display)
+    # --- World coordinates for overlay ---
     world_positions = None
     if detections:
-        # Try to compute relative positions for just this camera's detections
         temp_dict = {camera_id: detections}
         try:
             world_positions = compute_relative_marker_positions(temp_dict)
         except:
-            pass  # If we can't compute world positions, fall back to camera coords
-    
-    # Overlay for visualization with world coordinates (use undistorted frame)
-    # Note: We use newcameramatrix for drawing since the image is now undistorted
-    display_frame = draw_aruco_overlays(undistorted, corners, ids, newcameramatrix, None, Defaults.TAG_SIZE, rvecs, tvecs, world_positions) if ids is not None else undistorted
+            pass
 
-    # Estimate camera pose from reference tags (if pre-defined positions exist)
-    # Note: With the new relative positioning system, this is optional
+    # --- Undistort full image for display only (alpha=0: no black borders) ---
+    display_frame = cv2.undistort(frame, CAM_K, CAM_D)
+    display_frame = draw_aruco_overlays(
+        display_frame, corners, ids, CAM_K, None,
+        Defaults.TAG_SIZE, rvecs, tvecs, world_positions
+    ) if ids is not None else display_frame
+
+    # Estimate camera pose from reference tags (optional)
     cameraPos = None
     try:
         cameraPos = compute_camera_pos(detections)
     except:
-        pass  # Ignore if ref_tags not properly configured
-    
-    # Add camera name and position overlay
+        pass
+
+    # Add camera name overlay
     cv2.putText(display_frame, camera_name, (10, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 0), 3, cv2.LINE_AA)
     if cameraPos is not None:
         cameraTranslation = cameraPos[0:3, 3].flatten()
         pos_text = f"Pos: X{cameraTranslation[0]:.2f} Y{cameraTranslation[1]:.2f} Z{cameraTranslation[2]:.2f}"
         cv2.putText(display_frame, pos_text, (10, 90), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2, cv2.LINE_AA)
-    
+
     return display_frame, detections, cameraPos
 
 
