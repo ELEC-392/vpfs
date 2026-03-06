@@ -11,11 +11,16 @@ class ReferenceTag:
         self.mat = self._build_mat()
 
     def _build_mat(self) -> ArrayLike:
+        # This is the map_to_tag transform: p_tag = R @ p_map + t
+        # For tag origin (p_tag=[0,0,0]) to sit at world position (x, y, z):
+        #   t = -R @ [x, y, z]
+        # With R = diag(1, -1, -1):
+        #   t = -[x, -y, -z] = [-x, y, z]
         return np.array([
-            [1, 0, 0, self.x],
-            [0, -1, 0, self.y],
-            [0, 0, -1, self.z],
-            [0, 0, 0, 1]
+            [1, 0, 0, -self.x],
+            [0, -1, 0,  self.y],
+            [0, 0, -1,  self.z],
+            [0, 0,  0,  1]
         ])
 
 ref_tags: Dict[int, ReferenceTag] = { }
