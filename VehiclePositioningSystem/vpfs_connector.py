@@ -40,7 +40,7 @@ def connect_to_server(url: str = "http://localhost:5000"):
         connected = False
 
 
-def send_update(tagPoses: Dict[int, Tuple[int, int, int]]):
+def send_update(tagPoses: Dict[int, Tuple]):
     if not connected:
         return
 
@@ -49,6 +49,7 @@ def send_update(tagPoses: Dict[int, Tuple[int, int, int]]):
         data.append({
             'team': tag,
             'x': pose[0],
-            'y': pose[1]
+            'y': pose[1],
+            'heading': pose[3] if len(pose) > 3 else 0.0,
         })
     sock.emit("whereami_update", data)

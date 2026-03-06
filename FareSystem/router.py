@@ -414,7 +414,8 @@ def whereami_get(team: int):
         team_obj = fms.teams[team]
         point = {
             "x": team_obj.pos.x,
-            "y": team_obj.pos.y
+            "y": team_obj.pos.y,
+            "heading": team_obj.heading,
         }
         last_update = team_obj.lastPosUpdate
     else:
@@ -471,6 +472,7 @@ whereami_update_schema = {
             "team": {"type": "number"},
             "x": {"type": "number"},
             "y": {"type": "number"},
+            "heading": {"type": "number"},
         },
         "required": ["team", "x", "y"],
     },
@@ -480,7 +482,7 @@ whereami_update_schema = {
 def whereami_update(json):
     """
     Receives batched position updates over Socket.IO.
-    Payload: list of {team, x, y} objects. Validated by JSON Schema.
+    Payload: list of {team, x, y, heading?} objects. Validated by JSON Schema.
     """
     # Log sending address (consider whitelisting in production)
     print(f"Recv whereami update from {request.remote_addr}")
@@ -491,16 +493,20 @@ def whereami_update(json):
             team = entry['team']
             x = entry['x']
             y = entry['y']
-            if team in fms.teams.keys():
-                fms.teams[team].update_position(Point(x, y))
-                # Broadcast position update to map monitor clients
-                sock.emit('position_update', {
-                    'team_id': team,
-                    'x': x,
-                    'y': y
-                })
-            else:
-                print(f"Team not in match {team}")
+            heading = entry.get('heading', 0.0)
+            with fms.mutex:
+                # Auto-register team on first position update
+                if team not in fms.teams:
+                    fms.teams[team] = Team(team)
+                    print(f"Auto-registered team {team}")
+                fms.teams[team].update_position(Point(x, y), heading)
+            # Broadcast position update to map monitor clients
+            sock.emit('position_update', {
+                'team_id': team,
+                'x': x,
+                'y': y,
+                'heading': heading,
+            })
     except ValidationError as e:
         print(f"Validation failed: {e}")
 

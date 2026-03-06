@@ -370,7 +370,10 @@ def compute_tag_poses(detections, cam_pos: ArrayLike) -> Dict[int, Tuple[int, in
         R = map_to_tag[:3, :3]
         t = map_to_tag[:3, 3]
         pos = -R.T @ t
-        tag_poses[det.tag_id] = (float(pos[0]), float(pos[1]), float(pos[2]))
+        # Heading: angle of tag X axis w.r.t. world X axis.
+        # R transforms world->tag, so tag X in world = first row of R.
+        heading = float(np.arctan2(R[0, 1], R[0, 0]))
+        tag_poses[det.tag_id] = (float(pos[0]), float(pos[1]), float(pos[2]), heading)
 
     return tag_poses
 

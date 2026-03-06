@@ -520,7 +520,7 @@ def compute_world_positions(detections_by_camera):
     Returns:
         dict  tag_id -> (x_m, y_m, z_m)  in world coordinates (metres)
     """
-    all_observations = {}  # tag_id -> list of (x, y, z)
+    all_observations = {}  # tag_id -> list of (x, y, z, heading)
 
     for camera_id, detections in detections_by_camera.items():
         if not detections:
@@ -542,15 +542,23 @@ def compute_world_positions(detections_by_camera):
             R = map_to_tag[:3, :3]
             t = map_to_tag[:3, 3]
             tag_pos_world = -R.T @ t   # tag origin in map/world coordinates
+            # Heading: angle of tag X axis projected to world XY plane.
+            # R transforms world->tag, so tag X in world = first row of R.
+            heading = float(np.arctan2(R[0, 1], R[0, 0]))
 
-            all_observations.setdefault(int(det.tag_id), []).append(tag_pos_world)
+            all_observations.setdefault(int(det.tag_id), []).append(
+                (tag_pos_world[0], tag_pos_world[1], tag_pos_world[2], heading)
+            )
 
-    # Average across cameras for tags seen by more than one
+    # Average across cameras for tags seen by more than one.
+    # Position: arithmetic mean. Heading: circular mean (handles wraparound).
     result = {}
-    for tag_id, positions in all_observations.items():
-        arr = np.array(positions)
-        mean = arr.mean(axis=0)
-        result[tag_id] = (float(mean[0]), float(mean[1]), float(mean[2]))
+    for tag_id, obs in all_observations.items():
+        arr = np.array(obs)  # shape (N, 4): x, y, z, heading
+        mean_xyz = arr[:, :3].mean(axis=0)
+        headings = arr[:, 3]
+        mean_heading = float(np.arctan2(np.sin(headings).mean(), np.cos(headings).mean()))
+        result[tag_id] = (float(mean_xyz[0]), float(mean_xyz[1]), float(mean_xyz[2]), mean_heading)
 
     return result
 
@@ -962,18 +970,24 @@ def main(argv=None):
             
             # Apply temporal smoothing to reduce jitter/fluctuations
             all_marker_positions = {}
-            for tag_id, (x, y, z) in raw_marker_positions.items():
+            for tag_id, (x, y, z, heading) in raw_marker_positions.items():
                 if tag_id in smoothed_positions:
                     # Apply exponential moving average
-                    old_x, old_y, old_z = smoothed_positions[tag_id]
+                    old_x, old_y, old_z, old_h = smoothed_positions[tag_id]
                     smoothed_x = SMOOTHING_ALPHA * x + (1 - SMOOTHING_ALPHA) * old_x
                     smoothed_y = SMOOTHING_ALPHA * y + (1 - SMOOTHING_ALPHA) * old_y
                     smoothed_z = SMOOTHING_ALPHA * z + (1 - SMOOTHING_ALPHA) * old_z
-                    smoothed_positions[tag_id] = (smoothed_x, smoothed_y, smoothed_z)
+                    # Circular EMA for heading (handles ±π wraparound)
+                    dh = np.arctan2(np.sin(heading - old_h), np.cos(heading - old_h))
+                    smoothed_h = float(np.arctan2(
+                        np.sin(old_h + SMOOTHING_ALPHA * dh),
+                        np.cos(old_h + SMOOTHING_ALPHA * dh)
+                    ))
+                    smoothed_positions[tag_id] = (smoothed_x, smoothed_y, smoothed_z, smoothed_h)
                 else:
                     # First observation - initialize with raw value
-                    smoothed_positions[tag_id] = (x, y, z)
-                
+                    smoothed_positions[tag_id] = (x, y, z, heading)
+
                 all_marker_positions[tag_id] = smoothed_positions[tag_id]
 
             # Reference markers define the coordinate system
@@ -987,7 +1001,7 @@ def main(argv=None):
                 # Print reference markers first (these define the map corners)
                 print("\n--- Reference Markers (Map Corners) ---")
                 for tag_id in sorted([tid for tid in all_marker_positions.keys() if tid in REFERENCE_TAG_IDS]):
-                    x, y, z = all_marker_positions[tag_id]
+                    x, y, z, heading = all_marker_positions[tag_id]
                     # Convert to centimeters to match overlay display
                     print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
                 
@@ -996,9 +1010,9 @@ def main(argv=None):
                 if mobile_markers:
                     print("\n--- Mobile Markers (Tracked Objects) ---")
                     for tag_id in sorted(mobile_markers.keys()):
-                        x, y, z = mobile_markers[tag_id]
+                        x, y, z, heading = mobile_markers[tag_id]
                         # Convert to centimeters to match overlay display
-                        print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
+                        print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  Heading={np.degrees(heading):6.1f}°  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
                     
                     # Send mobile markers to VPFS backend
                     vpfs_connector.send_update(mobile_markers)

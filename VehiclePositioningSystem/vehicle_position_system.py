@@ -206,15 +206,15 @@ def main(argv=None, camera_id=0):
 
             print("\n--- Reference Markers (Map Corners) ---")
             for tag_id in sorted([tid for tid in tagPoses if tid in REFERENCE_TAG_IDS]):
-                x, y, z = tagPoses[tag_id]
+                x, y, z, heading = tagPoses[tag_id]
                 print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
 
             mobile_markers = {tid: pos for tid, pos in tagPoses.items() if tid not in REFERENCE_TAG_IDS}
             if mobile_markers:
                 print("\n--- Mobile Markers (Tracked Objects) ---")
                 for tag_id in sorted(mobile_markers.keys()):
-                    x, y, z = mobile_markers[tag_id]
-                    print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
+                    x, y, z, heading = mobile_markers[tag_id]
+                    print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  Heading={np.degrees(heading):6.1f}°  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
                 vpfs_connector.send_update(mobile_markers)
                 print(f"\n✓ Sent {len(mobile_markers)} mobile marker(s) to VPFS")
             else:
