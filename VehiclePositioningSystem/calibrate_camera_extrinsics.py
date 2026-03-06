@@ -188,6 +188,11 @@ def main():
     print("  • Markers should be stationary")
     print("  • Marker 95 defines the origin")
     print("  • Marker 96 defines the X-axis direction\n")
+    print("Expected output:")
+    print("  • Camera position: How far the camera is from marker 95")
+    print("  • Typical values: 50-300cm (depending on your setup)")
+    print("  • Z coordinate usually represents camera height above markers")
+    print("  • Standard deviation should be < 1-2cm for good calibration\n")
     
     input("Press ENTER when markers are in position and ready to calibrate...")
     
@@ -270,6 +275,15 @@ def main():
             if transform is not None:
                 camera_transforms[cam_info["id"]].append(transform)
                 sample_stats[cam_info["id"]]["success"] += 1
+                
+                # Early sanity check: warn on first sample if position seems wrong
+                if sample_stats[cam_info["id"]]["success"] == 1:
+                    cam_pos = transform[:3, 3]
+                    cam_dist = np.linalg.norm(cam_pos)
+                    if cam_dist > 5.0:  # Camera more than 5m from origin
+                        print(f"\n  ⚠ Camera {cam_info['id']} appears {cam_dist:.1f}m from marker 95!")
+                        print(f"    Position: X={cam_pos[0]:.2f}m Y={cam_pos[1]:.2f}m Z={cam_pos[2]:.2f}m")
+                        print(f"    This might indicate a problem with marker detection or setup")
             else:
                 # Error computing transform (missing marker 95 or 96)
                 sample_stats[cam_info["id"]]["no_markers"] += 1
@@ -333,8 +347,22 @@ def main():
         # Compute standard deviations for quality check
         t_std = np.std(translations, axis=0)
         
-        print(f"  Position: X={t_avg[0]*100:.1f}cm Y={t_avg[1]*100:.1f}cm Z={t_avg[2]*100:.1f}cm")
-        print(f"  Std Dev:  X={t_std[0]*100:.2f}cm Y={t_std[1]*100:.2f}cm Z={t_std[2]*100:.2f}cm")
+        # Calculate camera distance from origin
+        cam_distance = np.linalg.norm(t_avg)
+        
+        print(f"  Camera position (relative to marker 95):")
+        print(f"    X={t_avg[0]*100:7.1f}cm Y={t_avg[1]*100:7.1f}cm Z={t_avg[2]*100:7.1f}cm")
+        print(f"    Distance from origin: {cam_distance*100:.1f}cm")
+        print(f"  Position stability (std dev):")
+        print(f"    X={t_std[0]*100:.2f}cm Y={t_std[1]*100:.2f}cm Z={t_std[2]*100:.2f}cm")
+        
+        # Sanity check: warn if camera position seems unrealistic
+        if cam_distance > 5.0:  # More than 5 meters away
+            print(f"  ⚠ WARNING: Camera appears very far from markers ({cam_distance:.1f}m)")
+            print(f"     This might indicate a calibration problem!")
+        if any(t_std * 100 > 5.0):  # More than 5cm standard deviation
+            print(f"  ⚠ WARNING: High position variability detected")
+            print(f"     Markers might be moving, or camera setup is unstable")
         
         # Store result
         calibration_results[str(cam_id)] = {
@@ -373,6 +401,10 @@ def main():
     print(f"\nCalibration saved to: {output_file}")
     print(f"\nNote: Transforms are world->camera (camera's extrinsic pose).")
     print(f"      Main script will automatically invert them for use.")
+    print(f"\nInterpretation:")
+    print(f"  • Position values show where each camera is relative to marker 95")
+    print(f"  • Z coordinate typically represents camera height above markers")
+    print(f"  • Distance should match your physical camera placement")
     print(f"\nTo use this calibration:")
     print(f"  python vehicle_position_system_multicam.py --extrinsics {output_file}")
     print()
