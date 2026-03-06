@@ -179,20 +179,39 @@ def find_camera(device_list=None, search_model=None):
     return None
 
 
-def draw_aruco_overlays(img, corners, ids, CAM_K, CAM_D, TAG_SIZE, rvecs=None, tvecs=None):
+def draw_aruco_overlays(img, corners, ids, CAM_K, CAM_D, TAG_SIZE, rvecs=None, tvecs=None, world_positions=None):
+    """
+    Draw ArUco marker overlays on image.
+    
+    Args:
+        world_positions: Optional dict mapping tag_id -> (x, y, z) in world/map coordinates.
+                        If provided, displays world coords instead of camera coords.
+    """
     if corners is not None and len(corners) > 0:
         cv2.aruco.drawDetectedMarkers(img, corners, ids)
         if rvecs is not None and tvecs is not None and len(rvecs) > 0:
             for rvec, tvec in zip(rvecs, tvecs):
                 cv2.drawFrameAxes(img, CAM_K, CAM_D, rvec, tvec, TAG_SIZE * 0.5)
-        # Add text with relative position and between parenthesis the euclidean distance
+        # Add text with marker position
         for i, corner in enumerate(corners):
             c = corner[0]
             center_x = int(c[:, 0].mean())
             center_y = int(c[:, 1].mean())
-            if rvecs is not None and tvecs is not None and i < len(tvecs):
+            
+            # Get tag ID for this marker
+            tag_id = int(ids[i][0]) if ids is not None and i < len(ids) else None
+            
+            # Display world coordinates if available, otherwise camera coordinates
+            if world_positions is not None and tag_id is not None and tag_id in world_positions:
+                # World/map coordinates (relative to marker 95)
+                x, y, z = world_positions[tag_id]
+                text = f"ID:{tag_id} X:{x*100:.1f}cm Y:{y*100:.1f}cm Z:{z*100:.1f}cm"
+                cv2.putText(img, text, (center_x - 100, center_y - 40), cv2.FONT_HERSHEY_PLAIN, 3, (0, 255, 0), 3, cv2.LINE_AA)
+            elif rvecs is not None and tvecs is not None and i < len(tvecs):
+                # Camera coordinates (fallback)
                 tvec = tvecs[i]
-                text = f"X:{tvec[0][0]*100:.1f}cm Y:{tvec[1][0]*100:.1f}cm Z:{tvec[2][0]*100:.1f}cm ({np.linalg.norm(tvec)*100:.1f}cm)"
+                dist = np.linalg.norm(tvec)
+                text = f"ID:{tag_id if tag_id else '?'} cam: {dist*100:.1f}cm"
                 cv2.putText(img, text, (center_x - 100, center_y - 40), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 0), 3, cv2.LINE_AA)
     return img
 

@@ -10,6 +10,11 @@ Multi-Camera Vehicle Positioning System (VPS) runtime (ArUco-based).
 - Sends tag pose updates to the VPFS backend via vpfs_connector.
 - Shows live preview with marker overlays and FPS info for each camera.
 
+Usage:
+    python vehicle_position_system_multicam.py                # Normal mode with display
+    python vehicle_position_system_multicam.py --no-display   # Headless mode (faster)
+    python vehicle_position_system_multicam.py --calib <path> # Custom calibration file
+
 Calibration:
 - Attempts to load camera intrinsics from a JSON file (--calib path or
   camera_calibration.json next to this script). Falls back to hardcoded Brio 4K intrinsics.
@@ -71,6 +76,10 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
 
     # Create camera and set format before opening
     cam = cv2.VideoCapture()
+    
+    # Set buffer size to 1 to minimize latency and prevent buffer overflow
+    cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    
     cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
     cam.set(cv2.CAP_PROP_FRAME_WIDTH, Defaults.CAM_WIDTH)
     cam.set(cv2.CAP_PROP_FRAME_HEIGHT, Defaults.CAM_HEIGHT)
@@ -151,8 +160,18 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
                 )
             )
 
-    # Overlay for visualization
-    frame = draw_aruco_overlays(frame, corners, ids, CAM_K, CAM_D, Defaults.TAG_SIZE, rvecs, tvecs) if ids is not None else frame
+    # Compute world coordinates for this camera's view (for overlay display)
+    world_positions = None
+    if detections:
+        # Try to compute relative positions for just this camera's detections
+        temp_dict = {camera_id: detections}
+        try:
+            world_positions = compute_relative_marker_positions(temp_dict)
+        except:
+            pass  # If we can't compute world positions, fall back to camera coords
+    
+    # Overlay for visualization with world coordinates
+    frame = draw_aruco_overlays(frame, corners, ids, CAM_K, CAM_D, Defaults.TAG_SIZE, rvecs, tvecs, world_positions) if ids is not None else frame
 
     # Estimate camera pose from reference tags (if pre-defined positions exist)
     # Note: With the new relative positioning system, this is optional
@@ -172,19 +191,17 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     return frame, detections, cameraPos
 
 
-def capture_and_process_camera(cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, frame_time, gpu_frame=None, gpu_gray=None):
-    """Worker function to capture and process a single camera frame in parallel."""
-    ret, frame = cam_info["cap"].read()
-    
-    if not ret:
-        frame = np.zeros((Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, 3), dtype=np.uint8)
-        cv2.putText(frame, f"{cam_info['name']} - NO SIGNAL", 
+def process_frame_only(frame, cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, frame_time, gpu_frame=None, gpu_gray=None):
+    """Worker function to process a captured frame (detection only, no capture)."""
+    if frame is None:
+        blank_frame = np.zeros((Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, 3), dtype=np.uint8)
+        cv2.putText(blank_frame, f"{cam_info['name']} - NO SIGNAL", 
                   (50, Defaults.CAM_HEIGHT//2), cv2.FONT_HERSHEY_PLAIN, 
                   3, (0, 0, 255), 3, cv2.LINE_AA)
-        return frame, [], None, 0.0
+        return blank_frame, [], None, 0.0
     
     # Process frame for ArUco detection
-    frame, detections, cameraPos = process_camera_frame(
+    processed_frame, detections, cameraPos = process_camera_frame(
         frame, cam_info["id"], cam_info["name"], 
         CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
         gpu_frame, gpu_gray
@@ -196,12 +213,12 @@ def capture_and_process_camera(cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARU
     fps = 1 / frameTime if frameTime > 0 else 0.0
     
     # Add FPS overlay
-    h, w = frame.shape[:2]
-    cv2.putText(frame, f"{w}x{h} @ {fps:.1f}fps", 
+    h, w = processed_frame.shape[:2]
+    cv2.putText(processed_frame, f"{w}x{h} @ {fps:.1f}fps", 
                (10, h - 10), cv2.FONT_HERSHEY_PLAIN, 
                3, (255, 255, 255), 3, cv2.LINE_AA)
     
-    return frame, detections, cameraPos, current_time
+    return processed_frame, detections, cameraPos, current_time
 
 
 def fuse_tag_poses_from_cameras(detections_by_camera):
@@ -482,7 +499,26 @@ def compute_relative_marker_positions(detections_by_camera):
 
 
 def main(argv=None):
-    """Main loop for multi-camera visualization and processing."""
+    """
+    Main loop for multi-camera visualization and processing.
+    
+    Camera Handling Strategy:
+    - Frames are captured SEQUENTIALLY (one camera at a time) to prevent USB bandwidth saturation
+    - Processing (ArUco detection) is done in PARALLEL for performance
+    - Small delays between captures prevent V4L2 select() timeouts
+    - Automatic camera recovery if consecutive failures are detected
+    - Frame rate is limited to ~15 FPS to maintain stability
+    
+    Command-line Arguments:
+    - --no-display : Run in headless mode (no visual windows, faster performance)
+    - --calib <path> : Path to camera calibration file
+    """
+    # Parse command-line flags
+    show_display = True
+    if argv and '--no-display' in argv:
+        show_display = False
+        print("Running in headless mode (no visual display)")
+    
     # --- ArUco setup ---
     aruco = cv2.aruco
     # Pick a dictionary that matches your printed markers
@@ -536,34 +572,113 @@ def main(argv=None):
     
     # Main loop
     frame_times = [time.time()] * len(cameras)
+    camera_errors = [0] * len(cameras)  # Track consecutive errors per camera
+    MAX_CONSECUTIVE_ERRORS = 10
     
-    # Create thread pool for parallel processing
+    # FPS tracking
+    fps_window_size = 30  # Calculate FPS over last 30 frames
+    fps_timestamps = []
+    last_fps_print = time.time()
+    
+    # Create thread pool for parallel processing (NOT for capture)
     with ThreadPoolExecutor(max_workers=len(cameras)) as executor:
         while True:
-            # Submit all camera capture/process tasks in parallel
+            loop_start = time.time()
+            
+            # Step 1: Capture frames SEQUENTIALLY (one at a time) to avoid USB bandwidth issues
+            # This prevents V4L2 select() timeouts
+            captured_frames = []
+            for idx, cam_info in enumerate(cameras):
+                try:
+                    # Set a timeout for camera read
+                    ret, frame = cam_info["cap"].read()
+                    
+                    if not ret or frame is None:
+                        print(f"Warning: {cam_info['name']} failed to capture frame (error count: {camera_errors[idx] + 1})")
+                        captured_frames.append(None)
+                        camera_errors[idx] += 1
+                        
+                        # If too many consecutive errors, try to reinitialize
+                        if camera_errors[idx] >= MAX_CONSECUTIVE_ERRORS:
+                            print(f"ERROR: {cam_info['name']} has {camera_errors[idx]} consecutive failures. Attempting reinit...")
+                            try:
+                                cam_info["cap"].release()
+                                time.sleep(0.5)
+                                new_cam = initialize_camera(cam_info["id"], cam_info["K"], cam_info["D"])
+                                if new_cam is not None:
+                                    cam_info["cap"] = new_cam
+                                    camera_errors[idx] = 0
+                                    print(f"✓ {cam_info['name']} reinitialized successfully")
+                                else:
+                                    print(f"✗ {cam_info['name']} reinit failed")
+                            except Exception as e:
+                                print(f"✗ {cam_info['name']} reinit exception: {e}")
+                    else:
+                        captured_frames.append(frame)
+                        camera_errors[idx] = 0  # Reset error count on success
+                    
+                    # Small delay between camera reads to avoid USB bandwidth saturation
+                    time.sleep(0.01)
+                    
+                except Exception as e:
+                    print(f"Exception reading {cam_info['name']}: {e}")
+                    captured_frames.append(None)
+                    camera_errors[idx] += 1
+            
+            # Step 2: Process captured frames in PARALLEL (ArUco detection is CPU-intensive)
             futures = []
             for idx, cam_info in enumerate(cameras):
                 gpu_frame, gpu_gray = gpu_resources[idx]
                 future = executor.submit(
-                    capture_and_process_camera,
-                    cam_info, cam_info["K"], cam_info["D"], DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
+                    process_frame_only,
+                    captured_frames[idx], cam_info, cam_info["K"], cam_info["D"], 
+                    DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
                     frame_times[idx], gpu_frame, gpu_gray
                 )
                 futures.append((future, idx))
             
-            # Collect results from all cameras
-            frames = []
+            # Step 3: Collect results from all cameras
+            frames = [None] * len(cameras)  # Pre-allocate to ensure we have a frame for each camera
             all_detections = []
-            all_tag_poses = {}
             all_detections_by_camera = defaultdict(list)  # camera_id -> list of detections
             
             for future, idx in futures:
-                frame, detections, cameraPos, current_time = future.result()
-                frames.append(frame)
-                all_detections.extend(detections)
-                all_detections_by_camera[cameras[idx]["id"]].extend(detections)
-                frame_times[idx] = current_time
+                try:
+                    frame, detections, cameraPos, current_time = future.result(timeout=2.0)
+                    frames[idx] = frame
+                    all_detections.extend(detections)
+                    all_detections_by_camera[cameras[idx]["id"]].extend(detections)
+                    frame_times[idx] = current_time
+                except Exception as e:
+                    print(f"Processing error for camera {idx}: {e}")
+                    # Create blank frame for failed processing
+                    blank_frame = np.zeros((Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, 3), dtype=np.uint8)
+                    cv2.putText(blank_frame, f"{cameras[idx]['name']} - PROCESSING ERROR", 
+                              (50, Defaults.CAM_HEIGHT//2), cv2.FONT_HERSHEY_PLAIN, 
+                              3, (0, 0, 255), 3, cv2.LINE_AA)
+                    frames[idx] = blank_frame
+            
+            # Ensure all frames are valid (shouldn't happen, but safety check)
+            for idx in range(len(frames)):
+                if frames[idx] is None:
+                    frames[idx] = np.zeros((Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, 3), dtype=np.uint8)
+                    cv2.putText(frames[idx], f"{cameras[idx]['name']} - NO FRAME", 
+                              (50, Defaults.CAM_HEIGHT//2), cv2.FONT_HERSHEY_PLAIN, 
+                              3, (0, 0, 255), 3, cv2.LINE_AA)
 
+            # Update FPS tracking
+            fps_timestamps.append(time.time())
+            if len(fps_timestamps) > fps_window_size:
+                fps_timestamps.pop(0)
+            
+            # Calculate and print FPS to terminal (every 2 seconds)
+            current_time = time.time()
+            if current_time - last_fps_print >= 2.0:
+                if len(fps_timestamps) > 1:
+                    fps = (len(fps_timestamps) - 1) / (fps_timestamps[-1] - fps_timestamps[0])
+                    print(f"\n[FPS: {fps:.1f}] Processing {len(cameras)} cameras...")
+                last_fps_print = current_time
+            
             # Compute relative marker positions (marker 95 as origin, 96 along X-axis)
             # This doesn't require pre-defined world positions - builds coordinate frame from markers
             all_marker_positions = compute_relative_marker_positions(all_detections_by_camera)
@@ -600,26 +715,57 @@ def main(argv=None):
             else:
                 print("\nNo markers detected (need at least marker 95 visible)\n")
             
-            # Display each camera in its own window
-            for idx, (frame, cam_info) in enumerate(zip(frames, cameras)):
-                # Resize to fit on screen (adjust scale as needed)
-                # Use INTER_NEAREST for faster resize (less quality but much faster)
-                scale = 0.25  # Adjust this to make windows larger/smaller
-                new_width = int(frame.shape[1] * scale)
-                new_height = int(frame.shape[0] * scale)
-                resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+            # Display each camera in its own window (only if display is enabled)
+            if show_display:
+                for idx, (frame, cam_info) in enumerate(zip(frames, cameras)):
+                    try:
+                        # Resize to fit on screen (adjust scale as needed)
+                        # Use INTER_NEAREST for faster resize (less quality but much faster)
+                        scale = 0.25  # Adjust this to make windows larger/smaller
+                        new_width = int(frame.shape[1] * scale)
+                        new_height = int(frame.shape[0] * scale)
+                        resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+                        
+                        # Show in separate window for each camera
+                        cv2.imshow(cam_info["name"], resized)
+                    except Exception as e:
+                        print(f"Display error for {cam_info['name']}: {e}")
                 
-                # Show in separate window for each camera
-                cv2.imshow(cam_info["name"], resized)
+                # Handle keyboard input (ESC to quit)
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27:  # ESC to quit
+                    break
+            else:
+                # In headless mode, check for Ctrl+C via a small sleep
+                try:
+                    time.sleep(0.001)
+                except KeyboardInterrupt:
+                    print("\nReceived interrupt signal, shutting down...")
+                    break
             
-            # Handle keyboard input
-            if cv2.waitKey(1) & 0xFF == 27:  # ESC to quit
-                break
+            # Optional: frame rate limiting to prevent overwhelming cameras
+            # In headless mode, can run faster; with display, limit to ~15 FPS
+            loop_time = time.time() - loop_start
+            if show_display:
+                target_loop_time = 0.066  # ~15 FPS with display
+            else:
+                target_loop_time = 0.033  # ~30 FPS in headless mode
+            
+            if loop_time < target_loop_time:
+                time.sleep(target_loop_time - loop_time)
     
     # Cleanup
-    for cam_info in cameras:
-        cam_info["cap"].release()
-    cv2.destroyAllWindows()
+    print("\nShutting down cameras...")
+    for idx, cam_info in enumerate(cameras):
+        try:
+            cam_info["cap"].release()
+            print(f"  ✓ {cam_info['name']} released")
+        except Exception as e:
+            print(f"  ✗ Error releasing {cam_info['name']}: {e}")
+    
+    if show_display:
+        cv2.destroyAllWindows()
+    print("Shutdown complete.")
     
 
 if __name__ == "__main__":
