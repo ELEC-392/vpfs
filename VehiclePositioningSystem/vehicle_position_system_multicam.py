@@ -45,6 +45,7 @@ import time
 import os
 import json
 import signal
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 
@@ -73,6 +74,96 @@ OBJ_POINTS = np.array([[-Defaults.TAG_SIZE/2,  Defaults.TAG_SIZE/2, 0],
                        [Defaults.TAG_SIZE/2,   Defaults.TAG_SIZE/2, 0],
                        [Defaults.TAG_SIZE/2,  -Defaults.TAG_SIZE/2, 0],
                        [-Defaults.TAG_SIZE/2, -Defaults.TAG_SIZE/2, 0]], dtype=np.float32)
+
+
+class CameraCapture:
+    """
+    Continuous background capture thread for a single camera.
+
+    The Brio 4K produces frames at ~30fps regardless of how fast the main
+    loop reads them.  If the main loop is slower (e.g. 1–5 Hz) the V4L2
+    kernel buffer fills up, the driver throws select() timeouts, and the
+    camera appears to crash.
+
+    This class runs cap.read() in a daemon thread at full camera speed,
+    always discarding old frames and keeping only the most recent one.
+    The main loop calls get_frame() whenever it needs a fresh image; it
+    never touches the VideoCapture object directly.
+
+    Result: buffer is _always_ drained, crashes disappear, and the main
+    loop can run at any frequency without affecting camera stability.
+    """
+
+    def __init__(self, cam_info: dict):
+        self._cam_info = cam_info
+        self._cap: cv2.VideoCapture = cam_info["cap"]
+        self._lock  = threading.Lock()
+        self._frame = None          # most recent decoded frame
+        self._ok    = False         # whether the last read succeeded
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._consecutive_errors = 0
+        self._MAX_ERRORS = 30       # ~1 second of failures at 30fps before recovery
+
+    # ------------------------------------------------------------------
+    def start(self):
+        self._running = True
+        self._thread = threading.Thread(target=self._capture_loop,
+                                        daemon=True,
+                                        name=f"capture-{self._cam_info['name']}")
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2.0)
+
+    # ------------------------------------------------------------------
+    def get_frame(self):
+        """Return (ok, frame) — the latest frame captured by the background thread."""
+        with self._lock:
+            return self._ok, (self._frame.copy() if self._frame is not None else None)
+
+    @property
+    def is_alive(self):
+        return self._running and (self._thread is not None) and self._thread.is_alive()
+
+    # ------------------------------------------------------------------
+    def _capture_loop(self):
+        while self._running:
+            ret, frame = self._cap.read()
+            if ret and frame is not None:
+                with self._lock:
+                    self._frame = frame
+                    self._ok = True
+                self._consecutive_errors = 0
+            else:
+                self._consecutive_errors += 1
+                with self._lock:
+                    self._ok = False
+                if self._consecutive_errors >= self._MAX_ERRORS:
+                    print(f"\n[{self._cam_info['name']}] {self._consecutive_errors} consecutive "
+                          f"read failures — attempting recovery...")
+                    self._try_recover()
+                    self._consecutive_errors = 0
+
+    def _try_recover(self):
+        cam_id     = self._cam_info["id"]
+        device     = Defaults.CAMERA_SYMLINKS[cam_id]
+
+        force_release_camera(self._cap, device, cam_id)
+        time.sleep(1.0)
+        reset_usb_device(device)
+        time.sleep(1.0)
+
+        new_cap = initialize_camera(cam_id, self._cam_info["K"], self._cam_info["D"])
+        if new_cap is not None and new_cap.isOpened():
+            self._cap = new_cap
+            self._cam_info["cap"] = new_cap
+            print(f"[{self._cam_info['name']}] Recovery successful.")
+        else:
+            print(f"[{self._cam_info['name']}] Recovery failed — camera disabled.")
+            self._running = False
 
 
 def force_release_camera(cam, camera_device, camera_id):
@@ -753,135 +844,56 @@ def main(argv=None):
     else:
         gpu_resources = [(None, None)] * len(cameras)
     
+    # --- Start background capture threads (one per camera) ---
+    # Each thread reads at the camera's full native rate (~30fps) so the V4L2
+    # kernel buffer never fills up, regardless of how slow the main loop is.
+    captures = []
+    for cam_info in cameras:
+        c = CameraCapture(cam_info)
+        c.start()
+        captures.append(c)
+    print(f"Started {len(captures)} background capture thread(s).")
+
     # Main loop
     frame_times = [time.time()] * len(cameras)
-    camera_errors = [0] * len(cameras)  # Track consecutive errors per camera
-    MAX_CONSECUTIVE_ERRORS = 10
-    
+
     # Update frequency tracking
     update_count = 0
     start_time = time.time()
     last_stats_print = time.time()
     STATS_PRINT_INTERVAL = 5.0  # Print stats every 5 seconds
-    
+
     # Temporal smoothing for marker positions (reduces jitter)
     # Using exponential moving average: smoothed = alpha * new + (1-alpha) * old
     smoothed_positions = {}  # tag_id -> (x, y, z)
     SMOOTHING_ALPHA = 0.3  # 0.3 = more smoothing, 0.7+ = more responsive
-    
+
     # Timing diagnostics
     last_timing_warning = 0
     TIMING_WARNING_INTERVAL = 10.0  # Warn every 10 seconds if processing is slow
-    
-    # Create thread pool for parallel processing (NOT for capture)
-    print("\nStarting main capture loop...")
+
+    # Wait briefly for background threads to fill their first frame
+    time.sleep(0.5)
+
+    # Create thread pool for parallel ArUco detection (NOT for capture)
+    print("\nStarting main processing loop...")
     print("Press ESC (with display) or Ctrl+C (headless) to exit\n")
     
     with ThreadPoolExecutor(max_workers=len(cameras)) as executor:
         while True:
             loop_start = time.time()
-            
-            # Check if all cameras have failed
-            working_cameras = sum(1 for err in camera_errors if err >= 0)
-            if working_cameras == 0:
-                print("\n" + "="*70)
-                print("ERROR: All cameras have failed!")
-                print("Please check camera connections and restart the system.")
-                print("="*70)
+
+            # Check if all background capture threads have died
+            if not any(c.is_alive for c in captures):
+                print("\nERROR: All camera capture threads have stopped. Exiting.")
                 break
-            
-            # Step 1: Capture frames SEQUENTIALLY (one at a time) to avoid USB bandwidth issues
-            # This prevents V4L2 select() timeouts
+
+            # Step 1: Get the latest frame from each background capture thread.
+            # This is instant — no blocking, no V4L2 interaction in this thread.
             captured_frames = []
-            capture_start = time.time()
-            
-            for idx, cam_info in enumerate(cameras):
-                # Skip permanently failed cameras (marked as -1)
-                if camera_errors[idx] < 0:
-                    captured_frames.append(None)
-                    continue
-                
-                try:
-                    # CRITICAL: Flush old frames from buffer to prevent buffer overflow
-                    # This ensures we always get the freshest frame, not stale buffered frames
-                    # Without this, frames pile up when processing > capture rate → driver crash
-                    # Adaptive flushing: flush 1-2 frames (enough to clear buffer without wasting time)
-                    for _ in range(2):  # Discard 2 old frames (reduced from 3 for efficiency)
-                        cam_info["cap"].grab()
-                    
-                    # Now grab and retrieve the freshest frame
-                    ret = cam_info["cap"].grab()
-                    if ret:
-                        ret, frame = cam_info["cap"].retrieve()
-                    else:
-                        frame = None
-                    
-                    if not ret or frame is None:
-                        print(f"Warning: {cam_info['name']} failed to capture frame (error count: {camera_errors[idx] + 1})")
-                        captured_frames.append(None)
-                        camera_errors[idx] += 1
-                        
-                        # If too many consecutive errors, try to reinitialize
-                        if camera_errors[idx] >= MAX_CONSECUTIVE_ERRORS:
-                            print(f"\n{'='*70}")
-                            print(f"ERROR: {cam_info['name']} has {camera_errors[idx]} consecutive failures")
-                            print(f"Attempting aggressive recovery...")
-                            print(f"{'='*70}")
-                            
-                            try:
-                                camera_device = Defaults.CAMERA_SYMLINKS[cam_info["id"]]
-                                
-                                # Step 1: Force release current camera handle
-                                force_release_camera(cam_info["cap"], camera_device, cam_info["id"])
-                                time.sleep(1.0)
-                                
-                                # Step 2: Try USB device reset
-                                reset_usb_device(camera_device)
-                                time.sleep(1.0)
-                                
-                                # Step 3: Attempt to reinitialize
-                                print(f"  Attempting to reinitialize {cam_info['name']}...")
-                                new_cam = initialize_camera(cam_info["id"], cam_info["K"], cam_info["D"])
-                                
-                                if new_cam is not None and new_cam.isOpened():
-                                    cam_info["cap"] = new_cam
-                                    camera_errors[idx] = 0
-                                    print(f"✓ {cam_info['name']} successfully recovered!")
-                                else:
-                                    print(f"✗ {cam_info['name']} recovery failed")
-                                    print(f"  Device may need manual reset or system reboot")
-                                    # Mark camera as permanently failed (don't retry)
-                                    camera_errors[idx] = -1
-                                    remaining = sum(1 for e in camera_errors if e >= 0)
-                                    print(f"  Continuing with {remaining} remaining camera(s)")
-                                    
-                            except Exception as e:
-                                print(f"✗ {cam_info['name']} recovery exception: {e}")
-                                camera_errors[idx] = -1
-                                remaining = sum(1 for e in camera_errors if e >= 0)
-                                print(f"  Continuing with {remaining} remaining camera(s)")
-                            
-                            print(f"{'='*70}\n")
-                        
-                        # Skip camera if permanently failed (marked as -1)
-                        if camera_errors[idx] < 0:
-                            continue
-                    else:
-                        captured_frames.append(frame)
-                        camera_errors[idx] = 0  # Reset error count on success
-                    
-                    # Small delay between camera reads to avoid USB bandwidth saturation
-                    time.sleep(0.01)
-                    
-                except Exception as e:
-                    print(f"Exception reading {cam_info['name']}: {e}")
-                    captured_frames.append(None)
-                    camera_errors[idx] += 1
-            
-            # Log capture timing if it's taking too long
-            capture_time = time.time() - capture_start
-            if capture_time > 0.2:  # Capture taking more than 200ms is concerning
-                print(f"⚠ Slow capture: {capture_time*1000:.0f}ms for {len(cameras)} cameras")
+            for cap in captures:
+                ok, frame = cap.get_frame()
+                captured_frames.append(frame if ok else None)
             
             # Step 2: Process captured frames in PARALLEL (ArUco detection is CPU-intensive)
             futures = []
@@ -967,7 +979,7 @@ def main(argv=None):
                 for tag_id in sorted([tid for tid in all_marker_positions.keys() if tid in REFERENCE_TAG_IDS]):
                     x, y, z = all_marker_positions[tag_id]
                     # Convert to centimeters to match overlay display
-                    print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  Z={z*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
+                    print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
                 
                 # Print mobile markers (vehicles/objects being tracked)
                 mobile_markers = {tid: pos for tid, pos in all_marker_positions.items() if tid not in REFERENCE_TAG_IDS}
@@ -976,7 +988,7 @@ def main(argv=None):
                     for tag_id in sorted(mobile_markers.keys()):
                         x, y, z = mobile_markers[tag_id]
                         # Convert to centimeters to match overlay display
-                        print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  Z={z*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
+                        print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
                     
                     # Send mobile markers to VPFS backend
                     vpfs_connector.send_update(mobile_markers)
@@ -1033,13 +1045,10 @@ def main(argv=None):
     
     # Cleanup
     print("\nShutting down cameras...")
-    for idx, cam_info in enumerate(cameras):
-        try:
-            camera_device = Defaults.CAMERA_SYMLINKS[cam_info["id"]]
-            force_release_camera(cam_info["cap"], camera_device, cam_info["id"])
-            print(f"  ✓ {cam_info['name']} released")
-        except Exception as e:
-            print(f"  ✗ Error releasing {cam_info['name']}: {e}")
+    # Stop background capture threads (stop() joins the thread internally)
+    for cap in captures:
+        cap.stop()
+        print(f"  ✓ {cap._cam_info['name']} capture thread stopped")
     
     if show_display:
         cv2.destroyAllWindows()

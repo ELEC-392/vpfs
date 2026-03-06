@@ -345,7 +345,12 @@ def compute_tag_poses(detections, cam_pos: ArrayLike) -> Dict[int, Tuple[int, in
     """
     Compute tag positions in the map frame given the camera pose.
 
-    Performs: map_to_tag = (map_to_cam) * (cam_to_tag)
+    Correct chain:  p_tag = cam_to_tag @ map_to_cam @ p_world
+      → map_to_tag = cam_to_tag @ map_to_cam
+
+    Tag origin in world coords = inv(map_to_tag) @ [0,0,0,1]^T
+                                = -R^T @ t
+    (where R, t are the rotation/translation sub-blocks of map_to_tag)
 
     Args:
         detections: Iterable of detections with tag_id, pose_R, pose_t.
@@ -353,22 +358,19 @@ def compute_tag_poses(detections, cam_pos: ArrayLike) -> Dict[int, Tuple[int, in
 
     Returns:
         Dict mapping tag_id -> (x, y, z) in map/world coordinates (meters).
-        Values are extracted from the translation column of the map_to_tag matrix.
     """
     tag_poses: Dict[int, Tuple[int, int, int]] = {}
 
     for det in detections:
         # camera->tag from the detector
         cam_to_tag = det_to_transform_mat(det)
-        # map->tag = (map->cam) * (cam->tag)
-        map_to_tag = np.matmul(cam_pos, cam_to_tag)
-
-        # Extract translation (last column of the 4x4)
-        tag_poses[det.tag_id] = (
-            map_to_tag[0][3],
-            map_to_tag[1][3],
-            map_to_tag[2][3],
-        )
+        # map->tag: correct order is cam_to_tag @ map_to_cam
+        map_to_tag = cam_to_tag @ cam_pos
+        # Tag origin in world = -R^T @ t
+        R = map_to_tag[:3, :3]
+        t = map_to_tag[:3, 3]
+        pos = -R.T @ t
+        tag_poses[det.tag_id] = (float(pos[0]), float(pos[1]), float(pos[2]))
 
     return tag_poses
 

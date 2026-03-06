@@ -36,6 +36,24 @@ import platform
 
 
 def main(argv=None, camera_id=0):
+    # --- Parse flags ---
+    if argv is None:
+        argv = []
+    show_display = '--no-display' not in argv
+    update_frequency_hz = 10  # default
+    if '--hz' in argv:
+        idx = argv.index('--hz')
+        try:
+            update_frequency_hz = float(argv[idx + 1])
+            if update_frequency_hz <= 0 or update_frequency_hz > 60:
+                print(f"Warning: Invalid frequency {update_frequency_hz}Hz, using default 10Hz")
+                update_frequency_hz = 10
+        except (IndexError, ValueError):
+            update_frequency_hz = 10
+    target_loop_time = 1.0 / update_frequency_hz
+    print(f"Update Frequency: {update_frequency_hz} Hz (period: {target_loop_time*1000:.1f}ms)")
+    print(f"Display: {'enabled' if show_display else 'disabled (headless)'}")
+
     # Load camera intrinsics from JSON file or use defaults
     # Intrinsics used by the detector
     (in_fx, in_fy, in_cx, in_cy), CAM_D = resolve_camera_intrinsics(argv=argv, camera_id=camera_id)
@@ -80,6 +98,10 @@ def main(argv=None, camera_id=0):
     cam.set(cv2.CAP_PROP_AUTOFOCUS, 0)      # Disable autofocus
     cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Manual exposure mode
     cam.set(cv2.CAP_PROP_EXPOSURE, 185)     # Set exposure
+    # Keep V4L2 internal buffer at 1 frame so stale frames never accumulate.
+    # Without this, if ArUco detection is slow the kernel buffer fills up,
+    # triggering select() timeouts and driver crashes (same issue as multicam).
+    cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     max_fps = int(cam.get(cv2.CAP_PROP_FPS))
 
@@ -100,7 +122,10 @@ def main(argv=None, camera_id=0):
 
     # Running the main loop
     lastTime = time.time()
+    last_timing_warning = 0
+    TIMING_WARNING_INTERVAL = 10.0
     while True:
+        loop_start = time.time()
         ret, frame = cam.read()
         if not ret:
             print("Failed to receive frame, exiting")
@@ -129,7 +154,14 @@ def main(argv=None, camera_id=0):
             
             # Calculate pose for each marker
             for corner in corners:
-                success, rvec, tvec = cv2.solvePnP(objPoints, corner, CAM_K, CAM_D, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+                # Undistort corner points before solvePnP for better numerical
+                # stability with IPPE_SQUARE (same approach as multicam script).
+                pts = corner.reshape(4, 1, 2).astype(np.float32)
+                pts_undistorted = cv2.undistortPoints(pts, CAM_K, CAM_D, P=CAM_K)
+                success, rvec, tvec = cv2.solvePnP(
+                    objPoints, pts_undistorted, CAM_K, None,
+                    flags=cv2.SOLVEPNP_IPPE_SQUARE
+                )
                 if success:
                     rvecs.append(rvec)
                     tvecs.append(tvec)
@@ -150,33 +182,63 @@ def main(argv=None, camera_id=0):
 
         # Estimate camera pose from known reference tags (fused if multiple)
         cameraPos = compute_camera_pos(detections)
-        print(f"Camera Position: {cameraPos}" if cameraPos is not None else "Camera Position: Unknown")
 
         # If we have a valid camera pose, transform all detected tags to map/world coords
+        REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
         tagPoses = {}
         if cameraPos is not None:
             tagPoses = compute_tag_poses(detections, cameraPos)
-            vpfs_connector.send_update(tagPoses)
+
+            # Print marker positions in the same format as the multicam script
+            print(f"\n{'='*70}")
+            print(f"MARKER POSITIONS (relative to marker 95 at origin):")
+            print(f"{'='*70}")
+
+            print("\n--- Reference Markers (Map Corners) ---")
+            for tag_id in sorted([tid for tid in tagPoses if tid in REFERENCE_TAG_IDS]):
+                x, y, z = tagPoses[tag_id]
+                print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
+
+            mobile_markers = {tid: pos for tid, pos in tagPoses.items() if tid not in REFERENCE_TAG_IDS}
+            if mobile_markers:
+                print("\n--- Mobile Markers (Tracked Objects) ---")
+                for tag_id in sorted(mobile_markers.keys()):
+                    x, y, z = mobile_markers[tag_id]
+                    print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
+                vpfs_connector.send_update(mobile_markers)
+                print(f"\n✓ Sent {len(mobile_markers)} mobile marker(s) to VPFS")
+            else:
+                print("\n--- No mobile markers detected ---")
+
+            print(f"{'='*70}\n")
+        else:
+            print("\nNo markers detected (need at least marker 95 visible)\n")
 
         # FPS overlay
         frameTime = time.time() - lastTime
         fps = 1 / frameTime if frameTime > 0 else 0.0
         lastTime = time.time()
-        cv2.putText(frame, f"{frameWidth}x{frameHeight} @ {fps:.2f} fps", (0, frameHeight - 10), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 255), 5, cv2.LINE_AA)
 
-        # Display per-tag map-frame coordinates
-        i = -100
-        for tag in tagPoses:
-            cv2.putText(frame, f"{tag}: X{tagPoses[tag][0]:.2f} Y{tagPoses[tag][1]:.2f} Z{tagPoses[tag][2]:.2f}", (0, frameHeight + i), cv2.FONT_HERSHEY_PLAIN, 3, (255, 0, 255), 2, cv2.LINE_AA)
-            i -= 50
+        if show_display:
+            cv2.putText(frame, f"{frameWidth}x{frameHeight} @ {fps:.2f} fps", (0, frameHeight - 10), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 255), 5, cv2.LINE_AA)
+            cv2.imshow('frame', cv2.resize(frame, (Defaults.CAM_WIDTH//4, Defaults.CAM_HEIGHT//4)))
+            if cv2.waitKey(1) & 0xFF == 27:  # ESC to quit
+                break
 
-        cv2.imshow('frame', cv2.resize(frame, (Defaults.CAM_WIDTH//4, Defaults.CAM_HEIGHT//4)))
-        if cv2.waitKey(1) & 0xFF == 27:  # ESC to quit
-            break
+        # Maintain target update frequency
+        loop_time = time.time() - loop_start
+        if loop_time > target_loop_time:
+            now = time.time()
+            if now - last_timing_warning > TIMING_WARNING_INTERVAL:
+                print(f"\n⚠ WARNING: Processing too slow for {update_frequency_hz}Hz ({loop_time*1000:.0f}ms/loop, target {target_loop_time*1000:.0f}ms)")
+                last_timing_warning = now
+        else:
+            time.sleep(target_loop_time - loop_time)
 
     # Cleanup
     cam.release()
-    cv2.destroyAllWindows()   
+    if show_display:
+        cv2.destroyAllWindows()   
 
 
 if __name__ == "__main__":
