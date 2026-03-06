@@ -14,13 +14,19 @@ class ReferenceTag:
         # This is the map_to_tag transform: p_tag = R @ p_map + t
         # For tag origin (p_tag=[0,0,0]) to sit at world position (x, y, z):
         #   t = -R @ [x, y, z]
-        # With R = diag(1, -1, -1):
-        #   t = -[x, -y, -z] = [-x, y, z]
+        #
+        # Physical setup: markers lie flat on the floor, face pointing UP toward
+        # the ceiling camera. World frame: X=right, Y=forward, Z=up (ceiling).
+        # The tag axes align with the world axes for all uniformly-placed markers:
+        #   tag_X = world_X  =>  row (1, 0, 0)
+        #   tag_Y = world_Y  =>  row (0, 1, 0)
+        #   tag_Z = world_Z  =>  row (0, 0, 1)
+        # So R = Identity, and t = -I @ [x, y, z] = [-x, -y, -z].
         return np.array([
             [1, 0, 0, -self.x],
-            [0, -1, 0,  self.y],
-            [0, 0, -1,  self.z],
-            [0, 0,  0,  1]
+            [0, 1, 0, -self.y],
+            [0, 0, 1, -self.z],
+            [0, 0, 0,  1     ]
         ])
 
 ref_tags: Dict[int, ReferenceTag] = { }
@@ -36,8 +42,14 @@ def _addTag(tag: ReferenceTag):
 # These are used to compute camera poses. Once camera positions are known,
 # all other detected markers are transformed to world/map coordinates.
 # Positions are in meters (x, y).
-_addTag(ReferenceTag(95, 0., 0.))       # Origin corner
-_addTag(ReferenceTag(96, 1.05, 0.))      # Right edge
-_addTag(ReferenceTag(97, 1.05, 1.05))     # Far right corner
-_addTag(ReferenceTag(98, 0., 1.05))      # Far left corner
-_addTag(ReferenceTag(99, 0.5, 0.))    # Center marker
+
+# Origin corner
+_addTag(ReferenceTag(95, 0., 0.))    
+# Right edge   
+_addTag(ReferenceTag(96, 1.05, 0.)) 
+# Far right corner     
+_addTag(ReferenceTag(97, 1.05, 1.05))
+# Far left corner     
+_addTag(ReferenceTag(98, 0., 1.05))  
+# Center marker    
+_addTag(ReferenceTag(99, 0.5, 0.))    
