@@ -1,6 +1,5 @@
 from typing import Dict, Tuple
 import socketio
-import sys
 
 sock = socketio.Client()
 
@@ -10,13 +9,13 @@ connected = False
 def connect():
     global connected
     connected = True
-    print("Connected to VFPS")
+    print("Connected to VPFS")
 
 @sock.event
 def connect_error(data):
     global connected
     connected = False
-    print("The connection failed!")
+    print("The connection to VPFS failed!")
 
 @sock.event
 def disconnect():
@@ -24,9 +23,22 @@ def disconnect():
     connected = False
     print("Disconnected from VPFS")
 
-# Localhost server works this is the same computer as VPFS
-if 'vpfs' in sys.argv:
-    sock.connect("http://192.168.1.100:5000/")
+
+def connect_to_server(url: str = "http://localhost:5000"):
+    """
+    Connect to the VPFS backend.
+    Call this explicitly from the runtime script after parsing --vpfs.
+    """
+    global connected
+    if connected:
+        return
+    try:
+        print(f"Connecting to VPFS at {url} ...")
+        sock.connect(url)
+    except Exception as e:
+        print(f"Could not connect to VPFS: {e}")
+        connected = False
+
 
 def send_update(tagPoses: Dict[int, Tuple[int, int, int]]):
     if not connected:

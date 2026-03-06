@@ -54,6 +54,16 @@ def main(argv=None, camera_id=0):
     print(f"Update Frequency: {update_frequency_hz} Hz (period: {target_loop_time*1000:.1f}ms)")
     print(f"Display: {'enabled' if show_display else 'disabled (headless)'}")
 
+    # Connect to VPFS backend if --vpfs flag is provided
+    # Usage: --vpfs                  (connects to http://localhost:5000)
+    #        --vpfs http://host:5000  (connects to custom host)
+    if '--vpfs' in argv:
+        idx = argv.index('--vpfs')
+        vpfs_url = "http://localhost:5000"
+        if idx + 1 < len(argv) and not argv[idx + 1].startswith('--'):
+            vpfs_url = argv[idx + 1]
+        vpfs_connector.connect_to_server(vpfs_url)
+
     # Load camera intrinsics from JSON file or use defaults
     # Intrinsics used by the detector
     (in_fx, in_fy, in_cx, in_cy), CAM_D = resolve_camera_intrinsics(argv=argv, camera_id=camera_id)

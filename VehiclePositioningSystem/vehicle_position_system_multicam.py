@@ -782,7 +782,17 @@ def main(argv=None):
                 except ValueError:
                     print(f"Warning: Invalid frequency value, using default 10Hz")
                     update_frequency_hz = 10
-        
+
+        # Connect to VPFS backend if --vpfs flag is provided
+        # Usage: --vpfs                  (connects to http://localhost:5000)
+        #        --vpfs http://host:5000  (connects to custom host)
+        if '--vpfs' in argv:
+            idx = argv.index('--vpfs')
+            vpfs_url = "http://localhost:5000"
+            if idx + 1 < len(argv) and not argv[idx + 1].startswith('--'):
+                vpfs_url = argv[idx + 1]
+            vpfs_connector.connect_to_server(vpfs_url)
+
     # Display system configuration
     target_loop_time = 1.0 / update_frequency_hz
     print(f"\n{'='*70}")
