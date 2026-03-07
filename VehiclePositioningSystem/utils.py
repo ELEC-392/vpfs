@@ -204,8 +204,8 @@ def draw_aruco_overlays(img, corners, ids, CAM_K, CAM_D, TAG_SIZE, rvecs=None, t
             # Display world coordinates if available, otherwise camera coordinates
             if world_positions is not None and tag_id is not None and tag_id in world_positions:
                 # World/map coordinates (relative to marker 95)
-                x, y, z = world_positions[tag_id]
-                text = f"ID:{tag_id} X:{x*100:.1f}cm Y:{y*100:.1f}cm Z:{z*100:.1f}cm"
+                x, y, z, heading = world_positions[tag_id]
+                text = f"ID:{tag_id} X:{x*100:.1f}cm Y:{y*100:.1f}cm H:{np.degrees(heading):.0f}\u00b0"
                 cv2.putText(img, text, (center_x - 100, center_y - 40), cv2.FONT_HERSHEY_PLAIN, 3, (0, 255, 0), 3, cv2.LINE_AA)
             elif rvecs is not None and tvecs is not None and i < len(tvecs):
                 # Camera coordinates (fallback)
