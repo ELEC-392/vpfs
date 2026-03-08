@@ -345,8 +345,38 @@ def claim_fare(idx: int):
                 else:
                     message = err
             else:
-                # NOTE: likely intended to use idx, not id (built-in). Left unchanged.
-                message = f"Could not find fare with ID {id}"
+                message = f"Could not find fare with ID {idx}"
+        else:
+            message = f"Team {team} not in this match"
+
+        return jsonify({
+            "success": success,
+            "message": message
+        })
+
+@app.route("/fares/drop/<int:idx>")
+def drop_fare(idx: int):
+    """
+    Drops a previously claimed fare, returning it to the pool.
+    - Path: idx is the fare index.
+    - Query: auth carries code/team depending on mode.
+    Only the team that claimed the fare may drop it, and only before pickup.
+    """
+    team = authenticate(request.args.get("auth", default=""), MODE)
+    with fms.mutex:
+        success = False
+        message = ""
+        if team == -1:
+            message = "Authentication failed"
+        elif team in fms.teams.keys():
+            if idx < len(fms.fares):
+                err = fms.fares[idx].drop_fare(idx, fms.teams[team])
+                if err is None:
+                    success = True
+                else:
+                    message = err
+            else:
+                message = f"Could not find fare with ID {idx}"
         else:
             message = f"Team {team} not in this match"
 

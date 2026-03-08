@@ -66,9 +66,30 @@ class Fare:
             return f"Fare {idx} already claimed"
         if not self.isActive:
             return f"Fare {idx} is expired"
+        if team.currentFare is not None:
+            return f"Team {team.number} already has an active fare"
 
         self.team = team.number
         team.currentFare = idx
+        return None
+
+    def drop_fare(self, idx: int, team: Team) -> str | None:
+        """
+        Drop a previously claimed fare, returning it to the pool.
+        Only allowed if the fare has not yet been picked up.
+        :param idx: Index of the fare
+        :param team: Team attempting to drop the fare
+        :return: Error message, None if successful
+        """
+        if self.team != team.number:
+            return f"Fare {idx} is not claimed by team {team.number}"
+        if self.pickedUp:
+            return f"Fare {idx} cannot be dropped after pickup"
+
+        self.team = None
+        self.inPosition = False
+        self._phaseTimeout = -1
+        team.currentFare = None
         return None
 
     def pay_fare(self, teams : list[Team]):
