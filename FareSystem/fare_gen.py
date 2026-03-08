@@ -49,9 +49,15 @@ STANDARD = _fare_type_by_name("STANDARD")
 SPECIAL = _fare_type_by_name("SPECIAL")
 
 _DEFAULT_SPAWN_POINTS = [
-    {"name": f"P{i+1}", "coordinates": {"x": float((i+1)*50), "y": float((i+1)*50)},
+    {"name": f"P{i+1}", "coordinates": {"x": float(x), "y": float(y)},
      "fare_type_biases": {"STANDARD": 0.5, "SPECIAL": 0.5}}
-    for i in range(8)
+    for i, (x, y) in enumerate([
+        (100, 100), (300, 100), (500, 100), (700, 100),
+        (100, 300), (300, 300), (500, 300), (700, 300),
+        (100, 500), (300, 500), (500, 500), (700, 500),
+        (100, 700), (300, 700), (500, 700), (700, 700),
+        (200, 200), (600, 200), (200, 600), (600, 600),
+    ])
 ]
 
 @lru_cache(maxsize=1)
