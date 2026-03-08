@@ -10,7 +10,7 @@ from params import OperatingMode
 from typing import Union
 
 _authCodes: dict[str : int] = {
-    "asdf" : 7
+    "asdf" : 0
 }
 
 def authenticate(code: str, mode: Union[OperatingMode, str]) -> int:

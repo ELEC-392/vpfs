@@ -37,25 +37,9 @@ fares: list[Fare] = []
 # Global mutex protecting all shared state above (fares, teams, match variables).
 mutex = Lock()
 
-# Lazy way to quickly generate some dummy fares (disabled by default).
-# Add Points to this list if you want static seed fares at startup.
-points = [
-    # Point(0, 2),
-    # Point(3, 0),
-    # Point(0, -4),
-    # Point(-5, 0),
-]
-# Seed fares use the first configured fare type
-default_fare_type = next(iter(FareType))
-for point in points:
-    fares.append(Fare(Point(0, 0), point, default_fare_type))
-
 # Registered teams participating in the match, keyed by team number.
 teams: dict[int, Team] = {
     0: Team(0),
-    5: Team(5),
-    7: Team(7),
-    10: Team(10),
 }
 
 # Option A: start with no teams

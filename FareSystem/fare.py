@@ -104,6 +104,7 @@ class Fare:
         if team is not None:
             team.money += self.compute_fare()
             team.karma += self.compute_karma()
+            team.currentFare = None
             self.paid = True
 
     def to_json_dict(self, idx: int, extended: bool):

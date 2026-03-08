@@ -48,17 +48,24 @@ def _fare_type_by_name(name: str) -> FareType:
 STANDARD = _fare_type_by_name("STANDARD")
 SPECIAL = _fare_type_by_name("SPECIAL")
 
+_DEFAULT_SPAWN_POINTS = [
+    {"name": f"P{i+1}", "coordinates": {"x": float((i+1)*50), "y": float((i+1)*50)},
+     "fare_type_biases": {"STANDARD": 0.5, "SPECIAL": 0.5}}
+    for i in range(8)
+]
+
 @lru_cache(maxsize=1)
 def load_spawn_points_config() -> Dict[str, dict]:
     if not CONFIG_PATH.exists():
-        raise FileNotFoundError(f"Missing spawn points config: {CONFIG_PATH}")
-
-    with CONFIG_PATH.open("r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-
-    spawn_points = data.get("spawn_points")
-    if not isinstance(spawn_points, list) or not spawn_points:
-        raise ValueError("spawn_points.yaml must define a non-empty 'spawn_points' dict")
+        print(f"Warning: {CONFIG_PATH} not found, using default spawn points")
+        spawn_points = _DEFAULT_SPAWN_POINTS
+    else:
+        with CONFIG_PATH.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        spawn_points = data.get("spawn_points")
+        if not isinstance(spawn_points, list) or not spawn_points:
+            print("Warning: spawn_points.yaml has no valid entries, using default spawn points")
+            spawn_points = _DEFAULT_SPAWN_POINTS
 
     # Read the spawn points and their biases
     normalized: Dict[str, dict] = {}
