@@ -109,7 +109,9 @@ def dump_dmesg_usb(label: str = "") -> None:
             r = subprocess.run(
                 ["journalctl", "-k", "--since", "-120s", "--no-pager", "-o", "short"],
                 capture_output=True, text=True, timeout=6)
-            if r.returncode == 0 and r.stdout.strip():
+            # Filter out journal metadata lines ("-- No entries --", "-- Logs begin...", etc.)
+            real_lines = [l for l in r.stdout.splitlines() if not l.startswith("-- ")]
+            if r.returncode == 0 and real_lines:
                 raw = r.stdout
                 source = "journalctl -k"
         except Exception:
@@ -173,7 +175,7 @@ def log_v4l2_state(device: str, label: str = "") -> None:
     """
     tag = f" ({label})" if label else ""
     if not Path(_V4L2_CTL).exists():
-        log.warning(f"v4l2-ctl not found at {_V4L2_CTL} — cannot query {device}{tag}")
+        log.debug(f"v4l2-ctl not found at {_V4L2_CTL} — cannot query {device}{tag}")
         return
     try:
         result = subprocess.run(
@@ -391,6 +393,16 @@ class CameraCapture:
     loop can run at any frequency without affecting camera stability.
     """
 
+    # Class-level lock: only one camera may attempt recovery at a time.
+    # When all 3 cameras fail simultaneously, this prevents concurrent USB
+    # resets that would overwhelm the xHCI controller.
+    _recovery_lock = threading.Lock()
+
+    # Trigger recovery if no good frame has been received for this many seconds.
+    # With a blocking cap.read() that may stall 7-8 s per call, a count-based
+    # threshold alone would take minutes to fire; time-based fires in ~30 s.
+    _STALE_SECS = 30.0
+
     def __init__(self, cam_info: dict):
         self._cam_info = cam_info
         self._cap: cv2.VideoCapture = cam_info["cap"]
@@ -400,7 +412,7 @@ class CameraCapture:
         self._running = False
         self._thread: threading.Thread | None = None
         self._consecutive_errors = 0
-        self._MAX_ERRORS = 30       # ~1 second of failures at 30fps before recovery
+        self._MAX_ERRORS = 30       # count-based fallback; time-based (_STALE_SECS) fires first
         # Diagnostic counters — read by the watchdog thread without a lock
         # (occasional torn reads are fine; these are for logging only)
         self._frames_ok:   int         = 0
@@ -493,13 +505,20 @@ class CameraCapture:
                     # camera crashes that require a computer reset.
                     time.sleep(1.0 / 30.0)
 
-                    if self._consecutive_errors >= self._MAX_ERRORS:
-                        log.error(f"[{name}] {self._consecutive_errors} consecutive failures — "
-                                  f"triggering recovery "
+                    stale = (now - self._first_err_ts) >= self._STALE_SECS
+                    if self._consecutive_errors >= self._MAX_ERRORS or stale:
+                        reason = (
+                            f"no frame for {now - self._first_err_ts:.0f}s"
+                            if stale else
+                            f"{self._consecutive_errors} consecutive errors"
+                        )
+                        log.error(f"[{name}] Recovery triggered: {reason} "
                                   f"(ok={self._frames_ok} err={self._frames_err})")
                         dump_dmesg_usb(label=f"{name} pre-recovery")
-                        self._try_recover()
+                        with CameraCapture._recovery_lock:
+                            self._try_recover()
                         self._consecutive_errors = 0
+                        self._first_err_ts = None
 
             exit_reason = "_running flag cleared (normal stop)"
 
@@ -550,9 +569,9 @@ def force_release_camera(cam, camera_device, camera_id):
     """
     if cam is None:
         return
-    
-    print(f"  Releasing camera {camera_id}...")
-    
+
+    log.info(f"  Releasing camera {camera_id}...")
+
     # Try normal release multiple times
     for attempt in range(3):
         try:
@@ -560,16 +579,16 @@ def force_release_camera(cam, camera_device, camera_id):
             time.sleep(0.2)
             break
         except Exception as e:
-            print(f"    Release attempt {attempt+1} failed: {e}")
+            log.warning(f"    Release attempt {attempt+1} failed: {e}")
             time.sleep(0.1)
-    
+
     # Brief pause to let the release propagate.
     time.sleep(0.3)
-    
+
     # NOTE: Do NOT use 'fuser -k' here — if cam.release() leaves any fd open
     # (a known OpenCV/V4L2 race) that command would kill this process itself.
-    
-    print(f"  Camera {camera_id} released")
+
+    log.info(f"  Camera {camera_id} released")
 
 
 def reset_usb_device(camera_device):
@@ -578,20 +597,23 @@ def reset_usb_device(camera_device):
     This can help recover from hard crashes without rebooting.
     """
     try:
-        print(f"  Attempting USB device reset for {camera_device}...")
-        
+        log.info(f"  Attempting USB device reset for {camera_device}...")
+
         # Trigger udev action to re-enumerate device
-        result = os.system(f"udevadm trigger --action=change {camera_device} 2>/dev/null")
+        result = subprocess.run(
+            ["udevadm", "trigger", "--action=change", camera_device],
+            capture_output=True, text=True, timeout=5)
         time.sleep(1.0)
-        
-        if result == 0:
-            print(f"  USB device reset successful")
+
+        if result.returncode == 0:
+            log.info(f"  USB device reset successful")
             return True
         else:
-            print(f"  USB device reset failed (code {result})")
+            log.warning(f"  USB device reset failed (code {result.returncode}): "
+                        f"{result.stderr.strip()}")
             return False
     except Exception as e:
-        print(f"  USB reset exception: {e}")
+        log.warning(f"  USB reset exception: {e}")
         return False
 
 
