@@ -49,7 +49,6 @@ import threading
 import logging
 import logging.handlers
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 
 from utils import (
@@ -98,20 +97,28 @@ def dump_dmesg_usb(label: str = "") -> None:
     """
     tag = f" ({label})" if label else ""
     try:
-        result = subprocess.run(
-            ["dmesg", "--since", "-120s"],
-            capture_output=True, text=True, timeout=4)
-        lines = result.stdout.splitlines()
+        # Try --since first (needs util-linux >= 2.23); fall back to tail.
+        try:
+            result = subprocess.run(
+                ["dmesg", "--since", "-120s"],
+                capture_output=True, text=True, timeout=4)
+            raw = result.stdout
+        except Exception:
+            result = subprocess.run(
+                ["dmesg"],
+                capture_output=True, text=True, timeout=4)
+            raw = "\n".join(result.stdout.splitlines()[-200:])
+        lines = raw.splitlines()
         keywords = ("usb", "uvc", "xhci", "ehci", "video4linux", "v4l2",
                     "error", "warn", "reset", "disconnect",
                     "overflow", "timeout", "failed", "unable")
         usb_lines = [l for l in lines
                      if any(k in l.lower() for k in keywords)]
         if usb_lines:
-            log.warning(f"dmesg snapshot{tag} — last 120s USB/UVC kernel messages "
+            log.warning(f"dmesg snapshot{tag} — last USB/UVC kernel messages "
                         f"({len(usb_lines)} hits):\n" + "\n".join(usb_lines[-40:]))
         else:
-            log.info(f"dmesg snapshot{tag}: no USB/UVC kernel messages in last 120s")
+            log.info(f"dmesg snapshot{tag}: no USB/UVC kernel messages found")
     except Exception as exc:
         log.warning(f"dmesg probe failed{tag}: {exc}")
 
@@ -213,79 +220,105 @@ class CameraCapture:
         name   = self._cam_info["name"]
         cam_id = self._cam_info["id"]
         device = Defaults.CAMERA_SYMLINKS[cam_id]
+        exit_reason = "unknown"
 
-        while self._running:
-            ret, frame = self._cap.read()
+        try:
+            while self._running:
+                ret, frame = self._cap.read()
 
-            if ret and frame is not None:
-                self._frames_ok += 1
-                self._last_ok_ts = time.time()
-                with self._lock:
-                    self._frame = frame
-                    self._ok    = True
-                # Log recovery if we had an error streak
-                if self._consecutive_errors > 0:
-                    log.info(f"[{name}] Read recovered after {self._consecutive_errors} errors "
-                             f"(total ok={self._frames_ok} err={self._frames_err})")
-                self._consecutive_errors = 0
-                self._first_err_ts = None
-                self._dmesg_done   = False
-
-            else:
-                now = time.time()
-                self._frames_err        += 1
-                self._consecutive_errors += 1
-                with self._lock:
-                    self._ok = False
-
-                # Record when this streak started
-                if self._first_err_ts is None:
-                    self._first_err_ts = now
-                    log.warning(f"[{name}] First read error — "
-                                f"ok={self._frames_ok} err={self._frames_err} "
-                                f"cap.isOpened={self._cap.isOpened()}")
-
-                # On 3rd consecutive error: dump V4L2 state + dmesg for the log file
-                if not self._dmesg_done and self._consecutive_errors == 3:
-                    self._dmesg_done = True
-                    log_v4l2_state(device, label=f"{name} at error onset")
-                    dump_dmesg_usb(label=f"{name} error onset")
-
-                # Log every 5 errors to show progression
-                elif self._consecutive_errors % 5 == 0:
-                    streak_s = now - self._first_err_ts
-                    log.warning(f"[{name}] {self._consecutive_errors} consecutive errors "
-                                f"(streak={streak_s:.1f}s ok={self._frames_ok} err={self._frames_err})")
-
-                # Throttle retries to avoid hammering the USB bus with rapid V4L2
-                # ioctls — a tight spin with no sleep is the primary cause of hard
-                # camera crashes that require a computer reset.
-                time.sleep(1.0 / 30.0)
-
-                if self._consecutive_errors >= self._MAX_ERRORS:
-                    log.error(f"[{name}] {self._consecutive_errors} consecutive failures — "
-                              f"triggering recovery "
-                              f"(ok={self._frames_ok} err={self._frames_err})")
-                    dump_dmesg_usb(label=f"{name} pre-recovery")
-                    self._try_recover()
+                if ret and frame is not None:
+                    self._frames_ok += 1
+                    self._last_ok_ts = time.time()
+                    with self._lock:
+                        self._frame = frame
+                        self._ok    = True
+                    # Log recovery if we had an error streak
+                    if self._consecutive_errors > 0:
+                        log.info(f"[{name}] Read recovered after {self._consecutive_errors} errors "
+                                 f"(total ok={self._frames_ok} err={self._frames_err})")
                     self._consecutive_errors = 0
+                    self._first_err_ts = None
+                    self._dmesg_done   = False
+
+                else:
+                    now = time.time()
+                    self._frames_err        += 1
+                    self._consecutive_errors += 1
+                    with self._lock:
+                        self._ok = False
+
+                    # Record when this streak started
+                    if self._first_err_ts is None:
+                        self._first_err_ts = now
+                        log.warning(f"[{name}] First read error — "
+                                    f"ok={self._frames_ok} err={self._frames_err} "
+                                    f"cap.isOpened={self._cap.isOpened()}")
+
+                    # On 3rd consecutive error: dump V4L2 state + dmesg
+                    if not self._dmesg_done and self._consecutive_errors == 3:
+                        self._dmesg_done = True
+                        log_v4l2_state(device, label=f"{name} at error onset")
+                        dump_dmesg_usb(label=f"{name} error onset")
+
+                    # Log every 5 errors to show progression
+                    elif self._consecutive_errors % 5 == 0:
+                        streak_s = now - self._first_err_ts
+                        log.warning(f"[{name}] {self._consecutive_errors} consecutive errors "
+                                    f"(streak={streak_s:.1f}s ok={self._frames_ok} err={self._frames_err})")
+
+                    # Throttle retries to avoid hammering the USB bus with rapid V4L2
+                    # ioctls — a tight spin with no sleep is the primary cause of hard
+                    # camera crashes that require a computer reset.
+                    time.sleep(1.0 / 30.0)
+
+                    if self._consecutive_errors >= self._MAX_ERRORS:
+                        log.error(f"[{name}] {self._consecutive_errors} consecutive failures — "
+                                  f"triggering recovery "
+                                  f"(ok={self._frames_ok} err={self._frames_err})")
+                        dump_dmesg_usb(label=f"{name} pre-recovery")
+                        self._try_recover()
+                        self._consecutive_errors = 0
+
+            exit_reason = "_running flag cleared (normal stop)"
+
+        except Exception as exc:
+            import traceback
+            exit_reason = f"UNHANDLED EXCEPTION: {exc}"
+            log.error(f"[{name}] Capture thread crashed — {exit_reason}\n"
+                      f"{traceback.format_exc()}")
+            dump_dmesg_usb(label=f"{name} thread crash")
+            with self._lock:
+                self._ok = False
+            self._running = False
+
+        finally:
+            log.warning(f"[{name}] Capture thread exiting. Reason: {exit_reason} "
+                        f"(ok={self._frames_ok} err={self._frames_err})")  
 
     def _try_recover(self):
-        cam_id     = self._cam_info["id"]
-        device     = Defaults.CAMERA_SYMLINKS[cam_id]
+        name   = self._cam_info["name"]
+        cam_id = self._cam_info["id"]
+        device = Defaults.CAMERA_SYMLINKS[cam_id]
 
-        force_release_camera(self._cap, device, cam_id)
-        time.sleep(1.0)
-        reset_usb_device(device)
-        time.sleep(1.0)
+        log.warning(f"[{name}] Starting recovery sequence...")
+        try:
+            force_release_camera(self._cap, device, cam_id)
+            time.sleep(1.0)
+            reset_usb_device(device)
+            time.sleep(1.0)
 
-        new_cap = initialize_camera(cam_id, self._cam_info["K"], self._cam_info["D"])
-        if new_cap is not None and new_cap.isOpened():
-            self._cap = new_cap
-            self._cam_info["cap"] = new_cap
-            print(f"[{self._cam_info['name']}] Recovery successful.")
-        else:
-            print(f"[{self._cam_info['name']}] Recovery failed — camera disabled.")
+            new_cap = initialize_camera(cam_id, self._cam_info["K"], self._cam_info["D"])
+            if new_cap is not None and new_cap.isOpened():
+                self._cap = new_cap
+                self._cam_info["cap"] = new_cap
+                log.info(f"[{name}] Recovery successful.")
+            else:
+                log.error(f"[{name}] Recovery failed — camera disabled.")
+                self._running = False
+        except Exception as exc:
+            import traceback
+            log.error(f"[{name}] Recovery raised an exception — disabling camera.\n"
+                      f"{traceback.format_exc()}")
             self._running = False
 
 
@@ -1053,179 +1086,171 @@ def main(argv=None):
     # Wait briefly for background threads to fill their first frame
     time.sleep(0.5)
 
-    # Create thread pool for parallel ArUco detection (NOT for capture)
     print("\nStarting main processing loop...")
     print("Press ESC (with display) or Ctrl+C (headless) to exit\n")
-    
-    with ThreadPoolExecutor(max_workers=len(cameras)) as executor:
-        while True:
-            loop_start = time.time()
 
-            # Check if all background capture threads have died
-            if not any(c.is_alive for c in captures):
-                print("\nERROR: All camera capture threads have stopped. Exiting.")
-                break
+    while True:
+        loop_start = time.time()
 
-            # Step 1: Get the latest frame from each background capture thread.
-            # This is instant — no blocking, no V4L2 interaction in this thread.
-            captured_frames = []
-            for cap in captures:
-                ok, frame = cap.get_frame()
-                captured_frames.append(frame if ok else None)
-            
-            # Step 2: Process captured frames in PARALLEL (ArUco detection is CPU-intensive)
-            futures = []
-            for idx, cam_info in enumerate(cameras):
-                gpu_frame, gpu_gray = gpu_resources[idx]
-                future = executor.submit(
-                    process_frame_only,
-                    captured_frames[idx], cam_info, cam_info["K"], cam_info["D"], 
+        # Check if all background capture threads have died
+        if not any(c.is_alive for c in captures):
+            print("\nERROR: All camera capture threads have stopped. Exiting.")
+            break
+
+        # Step 1: Snapshot the latest frame from every camera simultaneously.
+        # Background capture threads keep draining the V4L2 buffer at full
+        # speed regardless of how long the processing below takes, so there
+        # is no back-pressure on the USB driver.
+        # The snapshot itself is instant (no V4L2 ioctls in this thread).
+        captured_frames = []
+        for cap in captures:
+            ok, frame = cap.get_frame()
+            captured_frames.append(frame if ok else None)
+
+        # Step 2: Process each camera's frame SEQUENTIALLY.
+        #
+        # Rationale for dropping the ThreadPoolExecutor:
+        # - Pool workers doing heavy CPU work (undistort + ArUco on full 1080p
+        #   frames) saturated all cores simultaneously, starving the capture
+        #   daemon threads of their scheduling slots.  When a capture thread
+        #   missed its cap.read() window the V4L2 kernel timeout fired and the
+        #   camera appeared to crash.
+        # - The cameras are not hardware-synced, so parallel processing gave
+        #   no temporal-alignment benefit over sequential.
+        # - At 1–10 Hz update rates, sequential processing of 3 cameras is
+        #   well within the time budget even on a single core.
+        frames = []
+        all_detections = []
+        all_detections_by_camera = defaultdict(list)
+
+        for idx, cam_info in enumerate(cameras):
+            gpu_frame, gpu_gray = gpu_resources[idx]
+            try:
+                frame, detections, cameraPos, current_time = process_frame_only(
+                    captured_frames[idx], cam_info, cam_info["K"], cam_info["D"],
                     DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
                     frame_times[idx], gpu_frame, gpu_gray
                 )
-                futures.append((future, idx))
-            
-            # Step 3: Collect results from all cameras
-            frames = [None] * len(cameras)  # Pre-allocate to ensure we have a frame for each camera
-            all_detections = []
-            all_detections_by_camera = defaultdict(list)  # camera_id -> list of detections
-            
-            for future, idx in futures:
+                frames.append(frame)
+                all_detections.extend(detections)
+                all_detections_by_camera[cam_info["id"]].extend(detections)
+                frame_times[idx] = current_time
+            except Exception as e:
+                log.warning(f"Processing error for {cam_info['name']}: {e}")
+                blank = np.zeros((Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, 3), dtype=np.uint8)
+                cv2.putText(blank, f"{cam_info['name']} - PROCESSING ERROR",
+                            (50, Defaults.CAM_HEIGHT // 2), cv2.FONT_HERSHEY_PLAIN,
+                            3, (0, 0, 255), 3, cv2.LINE_AA)
+                frames.append(blank)
+
+        # Update statistics
+        update_count += 1
+        current_time = time.time()
+
+        # Print system statistics (every 5 seconds)
+        if current_time - last_stats_print >= STATS_PRINT_INTERVAL:
+            elapsed = current_time - start_time
+            actual_hz = update_count / elapsed if elapsed > 0 else 0
+            print(f"\n[Stats] Updates: {update_count}, Actual: {actual_hz:.2f}Hz (target: {update_frequency_hz}Hz)")
+            last_stats_print = current_time
+
+        # Compute world-frame marker positions using ref_tags.py coordinates
+        raw_marker_positions = compute_world_positions(all_detections_by_camera)
+
+        # Apply temporal smoothing to reduce jitter/fluctuations
+        all_marker_positions = {}
+        for tag_id, (x, y, z, heading) in raw_marker_positions.items():
+            if tag_id in smoothed_positions:
+                # Apply exponential moving average
+                old_x, old_y, old_z, old_h = smoothed_positions[tag_id]
+                smoothed_x = SMOOTHING_ALPHA * x + (1 - SMOOTHING_ALPHA) * old_x
+                smoothed_y = SMOOTHING_ALPHA * y + (1 - SMOOTHING_ALPHA) * old_y
+                smoothed_z = SMOOTHING_ALPHA * z + (1 - SMOOTHING_ALPHA) * old_z
+                # Circular EMA for heading (handles ±π wraparound)
+                dh = np.arctan2(np.sin(heading - old_h), np.cos(heading - old_h))
+                smoothed_h = float(np.arctan2(
+                    np.sin(old_h + SMOOTHING_ALPHA * dh),
+                    np.cos(old_h + SMOOTHING_ALPHA * dh)
+                ))
+                smoothed_positions[tag_id] = (smoothed_x, smoothed_y, smoothed_z, smoothed_h)
+            else:
+                # First observation - initialize with raw value
+                smoothed_positions[tag_id] = (x, y, z, heading)
+
+            all_marker_positions[tag_id] = smoothed_positions[tag_id]
+
+        # Reference markers define the coordinate system
+        REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
+
+        if all_marker_positions:
+            print(f"\n{'='*70}")
+            print(f"MARKER POSITIONS (relative to marker 95 at origin):")
+            print(f"{'='*70}")
+
+            # Print reference markers first (these define the map corners)
+            print("\n--- Reference Markers (Map Corners) ---")
+            for tag_id in sorted([tid for tid in all_marker_positions.keys() if tid in REFERENCE_TAG_IDS]):
+                x, y, z, heading = all_marker_positions[tag_id]
+                print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
+
+            # Print mobile markers (vehicles/objects being tracked)
+            mobile_markers = {tid: pos for tid, pos in all_marker_positions.items() if tid not in REFERENCE_TAG_IDS}
+            if mobile_markers:
+                print("\n--- Mobile Markers (Tracked Objects) ---")
+                for tag_id in sorted(mobile_markers.keys()):
+                    x, y, z, heading = mobile_markers[tag_id]
+                    print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  Heading={np.degrees(heading):6.1f}°  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
+
+                # Send mobile markers to VPFS backend
+                vpfs_connector.send_update(mobile_markers)
+                print(f"\n✓ Sent {len(mobile_markers)} mobile marker(s) to VPFS")
+            else:
+                print("\n--- No mobile markers detected ---")
+
+            print(f"{'='*70}\n")
+        else:
+            print("\nNo markers detected (need at least marker 95 visible)\n")
+
+        # Display each camera in its own window (only if display is enabled)
+        if show_display:
+            for idx, (frame, cam_info) in enumerate(zip(frames, cameras)):
                 try:
-                    frame, detections, cameraPos, current_time = future.result(timeout=2.0)
-                    frames[idx] = frame
-                    all_detections.extend(detections)
-                    all_detections_by_camera[cameras[idx]["id"]].extend(detections)
-                    frame_times[idx] = current_time
+                    scale = 0.25
+                    new_width  = int(frame.shape[1] * scale)
+                    new_height = int(frame.shape[0] * scale)
+                    resized = cv2.resize(frame, (new_width, new_height),
+                                        interpolation=cv2.INTER_NEAREST)
+                    cv2.imshow(cam_info["name"], resized)
                 except Exception as e:
-                    print(f"Processing error for camera {idx}: {e}")
-                    # Create blank frame for failed processing
-                    blank_frame = np.zeros((Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, 3), dtype=np.uint8)
-                    cv2.putText(blank_frame, f"{cameras[idx]['name']} - PROCESSING ERROR", 
-                              (50, Defaults.CAM_HEIGHT//2), cv2.FONT_HERSHEY_PLAIN, 
-                              3, (0, 0, 255), 3, cv2.LINE_AA)
-                    frames[idx] = blank_frame
-            
-            # Ensure all frames are valid (shouldn't happen, but safety check)
-            for idx in range(len(frames)):
-                if frames[idx] is None:
-                    frames[idx] = np.zeros((Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, 3), dtype=np.uint8)
-                    cv2.putText(frames[idx], f"{cameras[idx]['name']} - NO FRAME", 
-                              (50, Defaults.CAM_HEIGHT//2), cv2.FONT_HERSHEY_PLAIN, 
-                              3, (0, 0, 255), 3, cv2.LINE_AA)
+                    print(f"Display error for {cam_info['name']}: {e}")
 
-            # Update statistics
-            update_count += 1
-            current_time = time.time()
-            
-            # Print system statistics (every 5 seconds)
-            if current_time - last_stats_print >= STATS_PRINT_INTERVAL:
-                elapsed = current_time - start_time
-                actual_hz = update_count / elapsed if elapsed > 0 else 0
-                print(f"\n[Stats] Updates: {update_count}, Actual: {actual_hz:.2f}Hz (target: {update_frequency_hz}Hz)")
-                last_stats_print = current_time
-            
-            # Compute world-frame marker positions using ref_tags.py coordinates
-            raw_marker_positions = compute_world_positions(all_detections_by_camera)
-            
-            # Apply temporal smoothing to reduce jitter/fluctuations
-            all_marker_positions = {}
-            for tag_id, (x, y, z, heading) in raw_marker_positions.items():
-                if tag_id in smoothed_positions:
-                    # Apply exponential moving average
-                    old_x, old_y, old_z, old_h = smoothed_positions[tag_id]
-                    smoothed_x = SMOOTHING_ALPHA * x + (1 - SMOOTHING_ALPHA) * old_x
-                    smoothed_y = SMOOTHING_ALPHA * y + (1 - SMOOTHING_ALPHA) * old_y
-                    smoothed_z = SMOOTHING_ALPHA * z + (1 - SMOOTHING_ALPHA) * old_z
-                    # Circular EMA for heading (handles ±π wraparound)
-                    dh = np.arctan2(np.sin(heading - old_h), np.cos(heading - old_h))
-                    smoothed_h = float(np.arctan2(
-                        np.sin(old_h + SMOOTHING_ALPHA * dh),
-                        np.cos(old_h + SMOOTHING_ALPHA * dh)
-                    ))
-                    smoothed_positions[tag_id] = (smoothed_x, smoothed_y, smoothed_z, smoothed_h)
-                else:
-                    # First observation - initialize with raw value
-                    smoothed_positions[tag_id] = (x, y, z, heading)
+            # Handle keyboard input (ESC to quit)
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:  # ESC to quit
+                break
+        else:
+            # In headless mode, minimal wait for keyboard interrupt check
+            try:
+                time.sleep(0.001)
+            except KeyboardInterrupt:
+                print("\nReceived interrupt signal, shutting down...")
+                break
 
-                all_marker_positions[tag_id] = smoothed_positions[tag_id]
+        # Maintain fixed update frequency
+        loop_time = time.time() - loop_start
 
-            # Reference markers define the coordinate system
-            REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
-            
-            if all_marker_positions:
-                print(f"\n{'='*70}")
-                print(f"MARKER POSITIONS (relative to marker 95 at origin):")
-                print(f"{'='*70}")
-                
-                # Print reference markers first (these define the map corners)
-                print("\n--- Reference Markers (Map Corners) ---")
-                for tag_id in sorted([tid for tid in all_marker_positions.keys() if tid in REFERENCE_TAG_IDS]):
-                    x, y, z, heading = all_marker_positions[tag_id]
-                    # Convert to centimeters to match overlay display
-                    print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
-                
-                # Print mobile markers (vehicles/objects being tracked)
-                mobile_markers = {tid: pos for tid, pos in all_marker_positions.items() if tid not in REFERENCE_TAG_IDS}
-                if mobile_markers:
-                    print("\n--- Mobile Markers (Tracked Objects) ---")
-                    for tag_id in sorted(mobile_markers.keys()):
-                        x, y, z, heading = mobile_markers[tag_id]
-                        # Convert to centimeters to match overlay display
-                        print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  Heading={np.degrees(heading):6.1f}°  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
-                    
-                    # Send mobile markers to VPFS backend
-                    vpfs_connector.send_update(mobile_markers)
-                    print(f"\n✓ Sent {len(mobile_markers)} mobile marker(s) to VPFS")
-                else:
-                    print("\n--- No mobile markers detected ---")
-                
-                print(f"{'='*70}\n")
-            else:
-                print("\nNo markers detected (need at least marker 95 visible)\n")
-            
-            # Display each camera in its own window (only if display is enabled)
-            if show_display:
-                for idx, (frame, cam_info) in enumerate(zip(frames, cameras)):
-                    try:
-                        # Resize to fit on screen (adjust scale as needed)
-                        # Use INTER_NEAREST for faster resize (less quality but much faster)
-                        scale = 0.25  # Adjust this to make windows larger/smaller
-                        new_width = int(frame.shape[1] * scale)
-                        new_height = int(frame.shape[0] * scale)
-                        resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
-                        
-                        # Show in separate window for each camera
-                        cv2.imshow(cam_info["name"], resized)
-                    except Exception as e:
-                        print(f"Display error for {cam_info['name']}: {e}")
-                
-                # Handle keyboard input (ESC to quit)
-                key = cv2.waitKey(1) & 0xFF
-                if key == 27:  # ESC to quit
-                    break
-            else:
-                # In headless mode, minimal wait for keyboard interrupt check
-                try:
-                    time.sleep(0.001)
-                except KeyboardInterrupt:
-                    print("\nReceived interrupt signal, shutting down...")
-                    break
-            
-            # Maintain fixed update frequency
-            loop_time = time.time() - loop_start
-            
-            # Warn if processing is exceeding target loop time (can't maintain frequency)
-            if loop_time > target_loop_time:
-                if current_time - last_timing_warning > TIMING_WARNING_INTERVAL:
-                    print(f"\n⚠ WARNING: Processing too slow for {update_frequency_hz}Hz ({loop_time*1000:.0f}ms/loop, target {target_loop_time*1000:.0f}ms)")
-                    print(f"  Consider: Lower --hz frequency, use --no-display, or reduce camera resolution")
-                    last_timing_warning = current_time
-            else:
-                # Sleep to maintain exact frequency
-                sleep_time = target_loop_time - loop_time
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+        # Warn if processing is exceeding target loop time (can't maintain frequency)
+        if loop_time > target_loop_time:
+            if current_time - last_timing_warning > TIMING_WARNING_INTERVAL:
+                print(f"\n⚠ WARNING: Processing too slow for {update_frequency_hz}Hz "
+                      f"({loop_time*1000:.0f}ms/loop, target {target_loop_time*1000:.0f}ms)")
+                print(f"  Consider: Lower --hz frequency, use --no-display, or reduce camera resolution")
+                last_timing_warning = current_time
+        else:
+            # Sleep to maintain exact frequency
+            sleep_time = target_loop_time - loop_time
+            if sleep_time > 0:
+                time.sleep(sleep_time)
     
     # Cleanup
     print("\nShutting down cameras...")
