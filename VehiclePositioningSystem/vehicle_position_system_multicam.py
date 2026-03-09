@@ -232,33 +232,22 @@ class TerminalDashboard:
     _CYAN   = "\033[36m"
     _WHITE  = "\033[37m"
 
-    # Matches any ANSI escape sequence so we can measure visible width
-    _ANSI_STRIP = re.compile(r'\033\[[0-9;]*[A-Za-z]')
-
     def __init__(self):
-        self._prev_rows = 0   # actual terminal rows consumed by last render
-
-    # ------------------------------------------------------------------
-    def _count_rows(self, lines: list) -> int:
-        """Count terminal rows consumed, accounting for line wrapping."""
-        cols = shutil.get_terminal_size((80, 24)).columns
-        total = 0
-        for line in lines:
-            visible = len(self._ANSI_STRIP.sub('', line))
-            # a blank line still occupies 1 row; wrapping adds extra rows
-            total += max(1, (visible + cols - 1) // cols)
-        return total
+        self._anchored = False  # True once we've saved the cursor anchor
 
     # ------------------------------------------------------------------
     def render(self, lines: list) -> None:
         """Overwrite the previously rendered block with new content."""
-        # Move cursor up to the start of the previous block, then clear down
-        if self._prev_rows:
-            sys.stdout.write(f"\033[{self._prev_rows}A\033[J")
-        output = "\n".join(lines) + "\n"
-        sys.stdout.write(output)
+        if not self._anchored:
+            # ESC 7  →  DEC Save Cursor: record exactly where the dashboard starts
+            sys.stdout.write("\0337")
+            self._anchored = True
+        else:
+            # ESC 8  →  DEC Restore Cursor: jump back to the saved position
+            # \033[J →  Erase from cursor to end of screen
+            sys.stdout.write("\0338\033[J")
+        sys.stdout.write("\n".join(lines) + "\n")
         sys.stdout.flush()
-        self._prev_rows = self._count_rows(lines)
 
     # ------------------------------------------------------------------
     def build(
