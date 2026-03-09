@@ -49,6 +49,8 @@ import threading
 import logging
 import logging.handlers
 import subprocess
+import shutil
+from pathlib import Path
 from collections import defaultdict
 
 from utils import (
@@ -79,7 +81,7 @@ _log_file_handler = logging.handlers.RotatingFileHandler(
     "vps_debug.log", maxBytes=5 * 1024 * 1024, backupCount=2)
 _log_file_handler.setFormatter(
     logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
-_log_console_handler = logging.StreamHandler(sys.stdout)
+_log_console_handler = logging.StreamHandler(sys.stderr)  # stderr keeps log warnings out of the dashboard
 _log_console_handler.setFormatter(
     logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
 log = logging.getLogger("vps")
@@ -107,20 +109,29 @@ def dump_dmesg_usb(label: str = "") -> None:
             result = subprocess.run(
                 ["dmesg"],
                 capture_output=True, text=True, timeout=4)
-            raw = "\n".join(result.stdout.splitlines()[-200:])
-        lines = raw.splitlines()
+            raw = result.stdout
+        all_lines = raw.splitlines()
         keywords = ("usb", "uvc", "xhci", "ehci", "video4linux", "v4l2",
                     "error", "warn", "reset", "disconnect",
-                    "overflow", "timeout", "failed", "unable")
-        usb_lines = [l for l in lines
+                    "overflow", "timeout", "failed", "unable", "suspend",
+                    "resume", "power", "autosuspend")
+        usb_lines = [l for l in all_lines
                      if any(k in l.lower() for k in keywords)]
         if usb_lines:
-            log.warning(f"dmesg snapshot{tag} — last USB/UVC kernel messages "
+            log.warning(f"dmesg snapshot{tag} — filtered USB/UVC kernel messages "
                         f"({len(usb_lines)} hits):\n" + "\n".join(usb_lines[-40:]))
         else:
-            log.info(f"dmesg snapshot{tag}: no USB/UVC kernel messages found")
+            # No keyword matches — dump the raw tail so we don't miss anything
+            tail = all_lines[-60:]
+            log.warning(f"dmesg snapshot{tag}: no keyword matches — "
+                        f"raw last {len(tail)} lines:\n" + "\n".join(tail))
     except Exception as exc:
         log.warning(f"dmesg probe failed{tag}: {exc}")
+
+
+# Resolve v4l2-ctl once at startup — it lives in /usr/sbin on most distros
+# but pyenv virtualenvs only have /usr/bin in PATH.
+_V4L2_CTL = shutil.which("v4l2-ctl") or "/usr/sbin/v4l2-ctl"
 
 
 def log_v4l2_state(device: str, label: str = "") -> None:
@@ -129,19 +140,196 @@ def log_v4l2_state(device: str, label: str = "") -> None:
     the format/FPS/buffer-count the driver negotiated matches what we requested.
     """
     tag = f" ({label})" if label else ""
+    if not Path(_V4L2_CTL).exists():
+        log.warning(f"v4l2-ctl not found at {_V4L2_CTL} — cannot query {device}{tag}")
+        return
     try:
         result = subprocess.run(
-            ["v4l2-ctl", "-d", device,
+            [_V4L2_CTL, "-d", device,
              "--get-fmt-video", "--get-parm",
              "--get-ctrl",
              "brightness,exposure_time_absolute,focus_absolute,focus_automatic_continuous"],
             capture_output=True, text=True, timeout=3)
         state = (result.stdout or result.stderr).strip()
         log.info(f"V4L2 state {device}{tag}:\n{state}")
-    except FileNotFoundError:
-        log.warning(f"v4l2-ctl not found — cannot query {device}{tag}")
     except Exception as exc:
         log.warning(f"v4l2-ctl query failed for {device}{tag}: {exc}")
+
+
+def disable_usb_autosuspend(device: str) -> None:
+    """
+    Disable USB autosuspend for the USB device backing a /dev/videoN symlink.
+
+    Linux USB autosuspend can silently power-down a camera after a period of
+    perceived inactivity (default 2 s for many kernels/hubs), causing all
+    cameras on the same controller to drop simultaneously — with no dmesg
+    error, just a clean disappearance.  Writing 'on' to power/control and
+    '-1' to power/autosuspend_delay_ms prevents this entirely.
+
+    The sysfs path is resolved via udevadm so it works with symlinks like
+    /dev/brio-camera0.
+    """
+    try:
+        # Resolve the sysfs device path for this /dev node
+        r = subprocess.run(
+            ["udevadm", "info", "-q", "path", "-n", device],
+            capture_output=True, text=True, timeout=3)
+        if r.returncode != 0 or not r.stdout.strip():
+            log.warning(f"disable_usb_autosuspend: udevadm could not resolve {device}")
+            return
+
+        sysfs = Path("/sys") / r.stdout.strip().lstrip("/")
+
+        # Walk up the sysfs tree to find the USB device directory
+        # (identified by the presence of idVendor)
+        p = sysfs
+        usb_dev = None
+        while p != p.parent:
+            if (p / "idVendor").exists():
+                usb_dev = p
+                break
+            p = p.parent
+
+        if usb_dev is None:
+            log.warning(f"disable_usb_autosuspend: no USB device node found for {device}")
+            return
+
+        vendor = (usb_dev / "idVendor").read_text().strip()
+        product = (usb_dev / "idProduct").read_text().strip()
+
+        power_control  = usb_dev / "power" / "control"
+        autosuspend_ms = usb_dev / "power" / "autosuspend_delay_ms"
+
+        power_control.write_text("on")
+        autosuspend_ms.write_text("-1")
+
+        log.info(f"USB autosuspend disabled for {device} "
+                 f"(vendor={vendor} product={product} sysfs={usb_dev})")
+
+    except PermissionError:
+        log.warning(f"disable_usb_autosuspend: permission denied writing to sysfs for {device}. "
+                    f"Run as root or add a udev rule: "
+                    f'ACTION=="add", SUBSYSTEM=="usb", ATTR{{power/control}}="on"')
+    except Exception as exc:
+        log.warning(f"disable_usb_autosuspend failed for {device}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# In-place terminal dashboard
+# ---------------------------------------------------------------------------
+class TerminalDashboard:
+    """
+    Redraws a fixed block of text in-place on stdout using ANSI escape codes.
+    Log warnings/errors are routed to stderr and appear above the dashboard.
+    """
+    # ANSI helpers
+    _RESET  = "\033[0m"
+    _BOLD   = "\033[1m"
+    _GREEN  = "\033[32m"
+    _YELLOW = "\033[33m"
+    _RED    = "\033[31m"
+    _CYAN   = "\033[36m"
+    _WHITE  = "\033[37m"
+
+    def __init__(self):
+        self._prev_lines = 0
+
+    # ------------------------------------------------------------------
+    def render(self, lines: list) -> None:
+        """Overwrite the previously rendered block with new content."""
+        # Move cursor up to the start of the previous block, then clear down
+        if self._prev_lines:
+            sys.stdout.write(f"\033[{self._prev_lines}A\033[J")
+        output = "\n".join(lines) + "\n"
+        sys.stdout.write(output)
+        sys.stdout.flush()
+        self._prev_lines = len(lines)
+
+    # ------------------------------------------------------------------
+    def build(
+        self,
+        update_count:      int,
+        start_time:        float,
+        loop_ms:           float,
+        target_hz:         float,
+        actual_hz:         float,
+        captures:          list,
+        all_marker_positions: dict,
+        mobile_markers:    dict,
+        vpfs_sent:         bool,
+    ) -> list:
+        """Return a list of terminal lines representing the current state."""
+        W = 72  # dashboard width
+        now      = time.time()
+        uptime_s = int(now - start_time)
+        h, m, s  = uptime_s // 3600, (uptime_s % 3600) // 60, uptime_s % 60
+        ts       = time.strftime("%H:%M:%S")
+
+        REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
+
+        lines = []
+        B, R, G, Y, C = self._BOLD, self._RESET, self._GREEN, self._YELLOW, self._CYAN
+
+        lines.append(f"{B}{'─'*W}{R}")
+        lines.append(f"{B}  MULTI-CAMERA POSITIONING SYSTEM{R}  "
+                     f"{C}{ts}{R}  uptime {h:02d}:{m:02d}:{s:02d}  updates {update_count}")
+        lines.append(f"{B}{'─'*W}{R}")
+
+        # --- FPS / timing panel ---
+        fps_color = G if actual_hz >= target_hz * 0.85 else Y if actual_hz >= target_hz * 0.5 else self._RED
+        lines.append(f"  {B}Rate :{R} {fps_color}{actual_hz:5.2f} Hz{R}  "
+                     f"target {target_hz:.0f} Hz   "
+                     f"loop {loop_ms:5.1f} ms")
+
+        # --- Camera health panel ---
+        lines.append(f"  {B}Cams :{R}")
+        for c in captures:
+            last   = c._last_ok_ts
+            age    = f"{now - last:.1f}s" if last else "never"
+            errs   = c._frames_err
+            streak = c._consecutive_errors
+            if not c.is_alive:
+                status = f"{self._RED}DEAD{R}"
+            elif streak > 0:
+                status = f"{self._RED}ERR×{streak}{R}"
+            elif errs == 0:
+                status = f"{G}OK{R}"
+            else:
+                status = f"{Y}OK (errs={errs}){R}"
+            lines.append(
+                f"    {c._cam_info['name']:10s}  "
+                f"ok={c._frames_ok:<7d}  err={errs:<5d}  "
+                f"last_ok={age:>7s}  {status}")
+
+        lines.append(f"{B}{'─'*W}{R}")
+
+        # --- Markers panel ---
+        lines.append(f"  {B}Reference markers:{R}")
+        ref_ids = sorted([tid for tid in all_marker_positions if tid in REFERENCE_TAG_IDS])
+        if ref_ids:
+            for tid in ref_ids:
+                x, y, z, _ = all_marker_positions[tid]
+                lines.append(f"    #{tid:2d}  X={x*100:7.1f} cm   Y={y*100:7.1f} cm   "
+                             f"dist={np.sqrt(x**2+y**2)*100:6.1f} cm")
+        else:
+            lines.append(f"    {Y}(none visible — need at least one of 95-99){R}")
+
+        lines.append(f"  {B}Mobile markers:{R}")
+        if mobile_markers:
+            for tid in sorted(mobile_markers):
+                x, y, z, heading = mobile_markers[tid]
+                sent = f"  {G}↑ sent{R}" if vpfs_sent else ""
+                lines.append(
+                    f"    #{tid:2d}  X={x*100:7.1f} cm   Y={y*100:7.1f} cm   "
+                    f"hdg={np.degrees(heading):6.1f}°   "
+                    f"dist={np.sqrt(x**2+y**2)*100:6.1f} cm{sent}")
+        else:
+            lines.append(f"    {Y}(none detected){R}")
+
+        lines.append(f"{B}{'─'*W}{R}")
+        lines.append(f"  {self._WHITE}Ctrl+C to quit   warnings → stderr   full log → vps_debug.log{R}")
+
+        return lines
 
 
 # Pre-compute marker coordinate system (saves computation per frame)
@@ -376,14 +564,21 @@ def reset_usb_device(camera_device):
 def initialize_camera(camera_id, CAM_K, CAM_D):
     """Initialize a single camera with proper settings."""
     camera_device = Defaults.CAMERA_SYMLINKS[camera_id]
-    print(f"Initializing camera {camera_id} ({camera_device})...")
-    
-    # Reset to defaults first
-    os.system(f"v4l2-ctl -d {camera_device} -c focus_automatic_continuous=0 2>/dev/null")
-    os.system(f"v4l2-ctl -d {camera_device} -c focus_absolute=0 2>/dev/null")
-    os.system(f"v4l2-ctl -d {camera_device} -c auto_exposure=1 2>/dev/null")
-    os.system(f"v4l2-ctl -d {camera_device} -c exposure_time_absolute=200 2>/dev/null")
-    os.system(f"v4l2-ctl -d {camera_device} -c brightness=128 2>/dev/null")
+    log.info(f"Initializing camera {camera_id} ({camera_device})...")
+
+    # Disable USB autosuspend before opening the device.
+    # This is the most common cause of simultaneous multi-camera drops on Linux:
+    # the USB power manager silently suspends the device after a few seconds of
+    # perceived inactivity, requiring a computer reset to recover.
+    disable_usb_autosuspend(camera_device)
+
+    # Reset camera controls to known defaults (use resolved v4l2-ctl path)
+    v4l = _V4L2_CTL
+    os.system(f"{v4l} -d {camera_device} -c focus_automatic_continuous=0 2>/dev/null")
+    os.system(f"{v4l} -d {camera_device} -c focus_absolute=0 2>/dev/null")
+    os.system(f"{v4l} -d {camera_device} -c auto_exposure=1 2>/dev/null")
+    os.system(f"{v4l} -d {camera_device} -c exposure_time_absolute=200 2>/dev/null")
+    os.system(f"{v4l} -d {camera_device} -c brightness=128 2>/dev/null")
 
     # Create camera and set format.
     # IMPORTANT: CAP_PROP_BUFFERSIZE must be set BEFORE open() on V4L2 — that is
@@ -1078,9 +1273,11 @@ def main(argv=None):
 
     # Update frequency tracking
     update_count = 0
-    start_time = time.time()
-    last_stats_print = time.time()
-    STATS_PRINT_INTERVAL = 5.0  # Print stats every 5 seconds
+    start_time   = time.time()
+    loop_ms      = 0.0   # processing time of the most recent loop iteration
+
+    # In-place terminal dashboard
+    dashboard = TerminalDashboard()
 
     # Temporal smoothing for marker positions (reduces jitter)
     # Using exponential moving average: smoothed = alpha * new + (1-alpha) * old
@@ -1154,28 +1351,28 @@ def main(argv=None):
 
         # Update statistics
         update_count += 1
-        current_time = time.time()
+        current_time  = time.time()
+        loop_ms       = (current_time - loop_start) * 1000
+        elapsed       = current_time - start_time
+        actual_hz     = update_count / elapsed if elapsed > 0 else 0.0
 
-        # Print system statistics (every 5 seconds)
-        if current_time - last_stats_print >= STATS_PRINT_INTERVAL:
-            elapsed = current_time - start_time
-            actual_hz = update_count / elapsed if elapsed > 0 else 0
-            print(f"\n[Stats] Updates: {update_count}, Actual: {actual_hz:.2f}Hz (target: {update_frequency_hz}Hz)")
-            last_stats_print = current_time
+        # Periodic stats to log file only (not terminal)
+        if update_count % max(1, int(update_frequency_hz * 5)) == 0:
+            log.info(f"[Stats] updates={update_count} actual={actual_hz:.2f}Hz "
+                     f"target={update_frequency_hz}Hz loop={loop_ms:.0f}ms")
 
         # Compute world-frame marker positions using ref_tags.py coordinates
         raw_marker_positions = compute_world_positions(all_detections_by_camera)
 
         # Apply temporal smoothing to reduce jitter/fluctuations
+        REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
         all_marker_positions = {}
         for tag_id, (x, y, z, heading) in raw_marker_positions.items():
             if tag_id in smoothed_positions:
-                # Apply exponential moving average
                 old_x, old_y, old_z, old_h = smoothed_positions[tag_id]
                 smoothed_x = SMOOTHING_ALPHA * x + (1 - SMOOTHING_ALPHA) * old_x
                 smoothed_y = SMOOTHING_ALPHA * y + (1 - SMOOTHING_ALPHA) * old_y
                 smoothed_z = SMOOTHING_ALPHA * z + (1 - SMOOTHING_ALPHA) * old_z
-                # Circular EMA for heading (handles ±π wraparound)
                 dh = np.arctan2(np.sin(heading - old_h), np.cos(heading - old_h))
                 smoothed_h = float(np.arctan2(
                     np.sin(old_h + SMOOTHING_ALPHA * dh),
@@ -1183,42 +1380,29 @@ def main(argv=None):
                 ))
                 smoothed_positions[tag_id] = (smoothed_x, smoothed_y, smoothed_z, smoothed_h)
             else:
-                # First observation - initialize with raw value
                 smoothed_positions[tag_id] = (x, y, z, heading)
-
             all_marker_positions[tag_id] = smoothed_positions[tag_id]
 
-        # Reference markers define the coordinate system
-        REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
+        # Send mobile markers to VPFS backend
+        mobile_markers = {tid: pos for tid, pos in all_marker_positions.items()
+                          if tid not in REFERENCE_TAG_IDS}
+        vpfs_sent = False
+        if mobile_markers:
+            vpfs_connector.send_update(mobile_markers)
+            vpfs_sent = True
 
-        if all_marker_positions:
-            print(f"\n{'='*70}")
-            print(f"MARKER POSITIONS (relative to marker 95 at origin):")
-            print(f"{'='*70}")
-
-            # Print reference markers first (these define the map corners)
-            print("\n--- Reference Markers (Map Corners) ---")
-            for tag_id in sorted([tid for tid in all_marker_positions.keys() if tid in REFERENCE_TAG_IDS]):
-                x, y, z, heading = all_marker_positions[tag_id]
-                print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
-
-            # Print mobile markers (vehicles/objects being tracked)
-            mobile_markers = {tid: pos for tid, pos in all_marker_positions.items() if tid not in REFERENCE_TAG_IDS}
-            if mobile_markers:
-                print("\n--- Mobile Markers (Tracked Objects) ---")
-                for tag_id in sorted(mobile_markers.keys()):
-                    x, y, z, heading = mobile_markers[tag_id]
-                    print(f"  Marker {tag_id:2d}: X={x*100:7.1f}cm  Y={y*100:7.1f}cm  Heading={np.degrees(heading):6.1f}°  (distance: {np.sqrt(x**2 + y**2)*100:.1f}cm)")
-
-                # Send mobile markers to VPFS backend
-                vpfs_connector.send_update(mobile_markers)
-                print(f"\n✓ Sent {len(mobile_markers)} mobile marker(s) to VPFS")
-            else:
-                print("\n--- No mobile markers detected ---")
-
-            print(f"{'='*70}\n")
-        else:
-            print("\nNo markers detected (need at least marker 95 visible)\n")
+        # Render in-place terminal dashboard (no scrolling)
+        dashboard.render(dashboard.build(
+            update_count=update_count,
+            start_time=start_time,
+            loop_ms=loop_ms,
+            target_hz=update_frequency_hz,
+            actual_hz=actual_hz,
+            captures=captures,
+            all_marker_positions=all_marker_positions,
+            mobile_markers=mobile_markers,
+            vpfs_sent=vpfs_sent,
+        ))
 
         # Display each camera in its own window (only if display is enabled)
         if show_display:
