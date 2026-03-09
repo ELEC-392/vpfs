@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # apply_usb_fix.sh — run once with sudo to permanently disable USB autosuspend
-# for Logitech Brio cameras.  Two complementary approaches:
+# for Logitech Brio cameras.  Three complementary layers:
 #   1. Kernel boot parameter (survives reboots, affects all USB)
-#   2. Systemd service (finer-grained, Brio-only, takes effect immediately)
+#   2. PCI runtime PM disable (the real root cause — xHCI controller sleep)
+#   3. Systemd service + udev rules (persistent across reboots)
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -19,21 +20,45 @@ else
 fi
 
 echo ""
-echo "=== Step 2: Brio autosuspend systemd service (immediate) ==="
+echo "=== Step 2: Disable xHCI PCI runtime PM right now (immediate) ==="
+for pcidev in /sys/bus/pci/devices/*/; do
+    driver=$(readlink "$pcidev/driver" 2>/dev/null | xargs basename 2>/dev/null)
+    if [ "$driver" = "xhci_hcd" ]; then
+        echo on > "$pcidev/power/control"              2>/dev/null && echo "  on: $pcidev" || echo "  FAILED: $pcidev"
+        echo -1 > "$pcidev/power/autosuspend_delay_ms" 2>/dev/null
+    fi
+done
+
+echo ""
+echo "=== Step 3: Disable USB root hub autosuspend right now ==="
+for hub in /sys/bus/usb/devices/usb*/; do
+    echo on > "$hub/power/control" 2>/dev/null && echo "  on: $hub"
+done
+
+echo ""
+echo "=== Step 4: Brio autosuspend systemd service (persistent across reboots) ==="
 cp "$SCRIPT_DIR/brio-autosuspend.service" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable brio-autosuspend.service
-systemctl start  brio-autosuspend.service
-echo "  Service installed and started."
+systemctl restart brio-autosuspend.service
+echo "  Service installed, enabled and restarted."
 
 echo ""
-echo "=== Step 3: Reload udev rules ==="
+echo "=== Step 5: Reload udev rules ==="
 cp "$SCRIPT_DIR/99-brio-camera.rules" /etc/udev/rules.d/
 udevadm control --reload-rules
+udevadm trigger --action=add --subsystem-match=pci
 udevadm trigger --action=add --subsystem-match=usb
 echo "  Udev rules reloaded."
 
 echo ""
-echo "=== Done. Verify with: ==="
-echo "  systemctl status brio-autosuspend.service"
-echo "  cat /sys/bus/usb/devices/*/power/control 2>/dev/null | sort -u"
+echo "=== Verify ==="
+echo "  xHCI PCI power/control:"
+for pcidev in /sys/bus/pci/devices/*/; do
+    driver=$(readlink "$pcidev/driver" 2>/dev/null | xargs basename 2>/dev/null)
+    [ "$driver" = "xhci_hcd" ] && echo "    $(cat $pcidev/power/control 2>/dev/null)  $pcidev"
+done
+echo "  USB root hub power/control:"
+for hub in /sys/bus/usb/devices/usb*/; do
+    echo "    $(cat $hub/power/control 2>/dev/null)  $hub"
+done
