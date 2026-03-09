@@ -121,8 +121,13 @@ class CameraCapture:
     # ------------------------------------------------------------------
     def get_frame(self):
         """Return (ok, frame) — the latest frame captured by the background thread."""
+        # Minimise lock hold time: grab a reference under the lock, copy outside.
+        # Holding the lock during a 6-12 MB memcopy blocks the capture thread from
+        # draining the V4L2 buffer, causing back-pressure on the USB driver.
         with self._lock:
-            return self._ok, (self._frame.copy() if self._frame is not None else None)
+            ok = self._ok
+            ref = self._frame  # reference only, no copy
+        return ok, (ref.copy() if ref is not None else None)
 
     @property
     def is_alive(self):
@@ -141,6 +146,10 @@ class CameraCapture:
                 self._consecutive_errors += 1
                 with self._lock:
                     self._ok = False
+                # Throttle retries to avoid hammering the USB bus with rapid V4L2
+                # ioctls — a tight spin with no sleep is the primary cause of hard
+                # camera crashes that require a computer reset.
+                time.sleep(1.0 / 30.0)
                 if self._consecutive_errors >= self._MAX_ERRORS:
                     print(f"\n[{self._cam_info['name']}] {self._consecutive_errors} consecutive "
                           f"read failures — attempting recovery...")
@@ -185,16 +194,11 @@ def force_release_camera(cam, camera_device, camera_id):
             print(f"    Release attempt {attempt+1} failed: {e}")
             time.sleep(0.1)
     
-    # Force close via system (kills any lingering processes)
+    # Brief pause to let the release propagate.
     time.sleep(0.3)
     
-    # Try to reset the device at V4L2 level
-    try:
-        # Close all file descriptors to this device
-        os.system(f"fuser -k {camera_device} 2>/dev/null")
-        time.sleep(0.2)
-    except:
-        pass
+    # NOTE: Do NOT use 'fuser -k' here — if cam.release() leaves any fd open
+    # (a known OpenCV/V4L2 race) that command would kill this process itself.
     
     print(f"  Camera {camera_id} released")
 
@@ -234,18 +238,21 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
     os.system(f"v4l2-ctl -d {camera_device} -c exposure_time_absolute=200 2>/dev/null")
     os.system(f"v4l2-ctl -d {camera_device} -c brightness=128 2>/dev/null")
 
-    # Create camera and set format before opening
+    # Create camera and set format.
+    # IMPORTANT: CAP_PROP_BUFFERSIZE must be set BEFORE open() on V4L2 — that is
+    # where OpenCV passes it to the kernel REQBUFS ioctl that allocates the queue.
     cam = cv2.VideoCapture()
-    
-    # Set buffer size to 1 to minimize latency and prevent buffer overflow
-    cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    
+    cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # <- must come before open()
     cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
     cam.set(cv2.CAP_PROP_FRAME_WIDTH, Defaults.CAM_WIDTH)
     cam.set(cv2.CAP_PROP_FRAME_HEIGHT, Defaults.CAM_HEIGHT)
     cam.open(camera_device, cv2.CAP_V4L2)
+
+    # Re-apply buffer size after open as a belt-and-suspenders measure
+    # (some OpenCV builds apply it only after open).
+    cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     
-    # Verify and reapply if needed
+    # Verify and reapply resolution if needed
     actual_w = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_h = int(cam.get(cv2.CAP_PROP_FRAME_HEIGHT))
     if actual_w != Defaults.CAM_WIDTH or actual_h != Defaults.CAM_HEIGHT:
@@ -253,7 +260,14 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
         cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
         cam.set(cv2.CAP_PROP_FRAME_WIDTH, Defaults.CAM_WIDTH)
         cam.set(cv2.CAP_PROP_FRAME_HEIGHT, Defaults.CAM_HEIGHT)
-    
+
+    # Cap FPS explicitly — three Brio 4K cameras at the default ~30fps MJPEG
+    # can saturate a single USB 3.0 controller, causing isochronous transfer
+    # errors that progressively corrupt the V4L2 state and require a reboot.
+    # 15fps halves per-camera USB bandwidth while still being faster than the
+    # fastest main-loop update rate (10Hz default).
+    cam.set(cv2.CAP_PROP_FPS, 15)
+
     # Camera control settings (applied via OpenCV as backup)
     cam.set(cv2.CAP_PROP_AUTOFOCUS, 0)      # Disable autofocus
     cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Manual exposure mode
