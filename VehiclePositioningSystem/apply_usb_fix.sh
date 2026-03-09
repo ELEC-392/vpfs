@@ -5,7 +5,7 @@
 #   2. PCI runtime PM disable (the real root cause — xHCI controller sleep)
 #   3. Systemd service + udev rules (persistent across reboots)
 
-set -e
+set -u  # error on undefined variables, but don't abort on command failures
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== Step 1: Kernel boot parameter (usbcore.autosuspend=-1) ==="
@@ -22,17 +22,18 @@ fi
 echo ""
 echo "=== Step 2: Disable xHCI PCI runtime PM right now (immediate) ==="
 for pcidev in /sys/bus/pci/devices/*/; do
-    driver=$(readlink "$pcidev/driver" 2>/dev/null | xargs basename 2>/dev/null)
+    driver=$(readlink "$pcidev/driver" 2>/dev/null | xargs basename 2>/dev/null || true)
     if [ "$driver" = "xhci_hcd" ]; then
-        echo on > "$pcidev/power/control"              2>/dev/null && echo "  on: $pcidev" || echo "  FAILED: $pcidev"
-        echo -1 > "$pcidev/power/autosuspend_delay_ms" 2>/dev/null
+        echo on > "$pcidev/power/control"              2>/dev/null && echo "  on: $pcidev" || echo "  FAILED (control): $pcidev"
+        echo -1 > "$pcidev/power/autosuspend_delay_ms" 2>/dev/null || true
     fi
 done
 
 echo ""
 echo "=== Step 3: Disable USB root hub autosuspend right now ==="
 for hub in /sys/bus/usb/devices/usb*/; do
-    echo on > "$hub/power/control" 2>/dev/null && echo "  on: $hub"
+    echo on > "$hub/power/control"              2>/dev/null && echo "  on: $hub" || echo "  FAILED: $hub"
+    echo -1 > "$hub/power/autosuspend_delay_ms" 2>/dev/null || true
 done
 
 echo ""
@@ -55,8 +56,8 @@ echo ""
 echo "=== Verify ==="
 echo "  xHCI PCI power/control:"
 for pcidev in /sys/bus/pci/devices/*/; do
-    driver=$(readlink "$pcidev/driver" 2>/dev/null | xargs basename 2>/dev/null)
-    [ "$driver" = "xhci_hcd" ] && echo "    $(cat $pcidev/power/control 2>/dev/null)  $pcidev"
+    driver=$(readlink "$pcidev/driver" 2>/dev/null | xargs basename 2>/dev/null || true)
+    [ "$driver" = "xhci_hcd" ] && echo "    $(cat $pcidev/power/control 2>/dev/null)  $pcidev" || true
 done
 echo "  USB root hub power/control:"
 for hub in /sys/bus/usb/devices/usb*/; do
