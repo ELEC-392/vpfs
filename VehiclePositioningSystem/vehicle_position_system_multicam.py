@@ -207,7 +207,7 @@ def disable_usb_autosuspend(device: str) -> None:
             ["udevadm", "info", "-q", "path", "-n", device],
             capture_output=True, text=True, timeout=3)
         if r.returncode != 0 or not r.stdout.strip():
-            log.warning(f"disable_usb_autosuspend: udevadm could not resolve {device}")
+            log.debug(f"disable_usb_autosuspend: udevadm could not resolve {device}")
             return
 
         sysfs = Path("/sys") / r.stdout.strip().lstrip("/")
@@ -223,7 +223,7 @@ def disable_usb_autosuspend(device: str) -> None:
             p = p.parent
 
         if usb_dev is None:
-            log.warning(f"disable_usb_autosuspend: no USB device node found for {device}")
+            log.debug(f"disable_usb_autosuspend: no USB device node found for {device}")
             return
 
         vendor = (usb_dev / "idVendor").read_text().strip()
@@ -239,11 +239,10 @@ def disable_usb_autosuspend(device: str) -> None:
                  f"(vendor={vendor} product={product} sysfs={usb_dev})")
 
     except PermissionError:
-        log.warning(f"disable_usb_autosuspend: permission denied writing to sysfs for {device}. "
-                    f"Run as root or add a udev rule: "
-                    f'ACTION=="add", SUBSYSTEM=="usb", ATTR{{power/control}}="on"')
+        log.debug(f"disable_usb_autosuspend: permission denied for {device} "
+                  f"(use apply_usb_fix.sh to install the systemd service)")
     except Exception as exc:
-        log.warning(f"disable_usb_autosuspend failed for {device}: {exc}")
+        log.debug(f"disable_usb_autosuspend failed for {device}: {exc}")
 
 
 # ---------------------------------------------------------------------------
