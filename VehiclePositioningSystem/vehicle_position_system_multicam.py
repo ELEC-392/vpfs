@@ -445,7 +445,7 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
     return cam
 
 
-def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, gpu_frame=None, gpu_gray=None):
+def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, gpu_frame=None, gpu_gray=None, show_display=True):
     """
     Process a single frame from one camera for ArUco detection.
     
@@ -498,7 +498,20 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
                 )
             )
 
-    # --- World coordinates for overlay ---
+    # Estimate camera pose from reference tags
+    cameraPos = None
+    try:
+        cameraPos = compute_camera_pos(detections)
+    except:
+        pass
+
+    # --- Display work: skip entirely in headless mode ---
+    # cv2.undistort on a full 1080p frame costs ~50-80ms per camera.
+    # In headless mode this work is pure waste, so we return None.
+    if not show_display:
+        return None, detections, cameraPos
+
+    # --- World coordinates for overlay (display only) ---
     world_positions = None
     if detections:
         temp_dict = {camera_id: detections}
@@ -514,13 +527,6 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
         Defaults.TAG_SIZE, rvecs, tvecs, world_positions
     ) if ids is not None else display_frame
 
-    # Estimate camera pose from reference tags (optional)
-    cameraPos = None
-    try:
-        cameraPos = compute_camera_pos(detections)
-    except:
-        pass
-
     # Add camera name overlay
     cv2.putText(display_frame, camera_name, (10, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 0), 3, cv2.LINE_AA)
     if cameraPos is not None:
@@ -531,33 +537,35 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     return display_frame, detections, cameraPos
 
 
-def process_frame_only(frame, cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, frame_time, gpu_frame=None, gpu_gray=None):
+def process_frame_only(frame, cam_info, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS, frame_time, gpu_frame=None, gpu_gray=None, show_display=True):
     """Worker function to process a captured frame (detection only, no capture)."""
     if frame is None:
-        blank_frame = np.zeros((Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, 3), dtype=np.uint8)
-        cv2.putText(blank_frame, f"{cam_info['name']} - NO SIGNAL", 
-                  (50, Defaults.CAM_HEIGHT//2), cv2.FONT_HERSHEY_PLAIN, 
-                  3, (0, 0, 255), 3, cv2.LINE_AA)
-        return blank_frame, [], None, 0.0
-    
+        if show_display:
+            blank_frame = np.zeros((Defaults.CAM_HEIGHT, Defaults.CAM_WIDTH, 3), dtype=np.uint8)
+            cv2.putText(blank_frame, f"{cam_info['name']} - NO SIGNAL",
+                        (50, Defaults.CAM_HEIGHT // 2), cv2.FONT_HERSHEY_PLAIN,
+                        3, (0, 0, 255), 3, cv2.LINE_AA)
+            return blank_frame, [], None, time.time()
+        return None, [], None, time.time()
+
     # Process frame for ArUco detection
     processed_frame, detections, cameraPos = process_camera_frame(
-        frame, cam_info["id"], cam_info["name"], 
+        frame, cam_info["id"], cam_info["name"],
         CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
-        gpu_frame, gpu_gray
+        gpu_frame, gpu_gray, show_display=show_display
     )
-    
-    # Calculate FPS per camera
+
     current_time = time.time()
-    frameTime = current_time - frame_time
-    fps = 1 / frameTime if frameTime > 0 else 0.0
-    
-    # Add FPS overlay
-    h, w = processed_frame.shape[:2]
-    cv2.putText(processed_frame, f"{w}x{h} @ {fps:.1f}fps", 
-               (10, h - 10), cv2.FONT_HERSHEY_PLAIN, 
-               3, (255, 255, 255), 3, cv2.LINE_AA)
-    
+
+    if show_display and processed_frame is not None:
+        # Add FPS overlay
+        frameTime = current_time - frame_time
+        fps = 1 / frameTime if frameTime > 0 else 0.0
+        h, w = processed_frame.shape[:2]
+        cv2.putText(processed_frame, f"{w}x{h} @ {fps:.1f}fps",
+                    (10, h - 10), cv2.FONT_HERSHEY_PLAIN,
+                    3, (255, 255, 255), 3, cv2.LINE_AA)
+
     return processed_frame, detections, cameraPos, current_time
 
 
@@ -1129,7 +1137,8 @@ def main(argv=None):
                 frame, detections, cameraPos, current_time = process_frame_only(
                     captured_frames[idx], cam_info, cam_info["K"], cam_info["D"],
                     DETECTOR, ARUCO_DICT, ARUCO_PARAMS,
-                    frame_times[idx], gpu_frame, gpu_gray
+                    frame_times[idx], gpu_frame, gpu_gray,
+                    show_display=show_display
                 )
                 frames.append(frame)
                 all_detections.extend(detections)
