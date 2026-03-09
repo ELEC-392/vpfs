@@ -46,6 +46,9 @@ import os
 import json
 import signal
 import threading
+import logging
+import logging.handlers
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 
@@ -68,6 +71,71 @@ try:
         print(f"Using GPU acceleration for image processing")
 except:
     print("GPU/CUDA not available, using CPU only")
+
+# ---------------------------------------------------------------------------
+# Logging — writes to the terminal AND a rotating file (vps_debug.log).
+# The file persists across crashes / terminal clears for post-mortem analysis.
+# ---------------------------------------------------------------------------
+_log_file_handler = logging.handlers.RotatingFileHandler(
+    "vps_debug.log", maxBytes=5 * 1024 * 1024, backupCount=2)
+_log_file_handler.setFormatter(
+    logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+_log_console_handler = logging.StreamHandler(sys.stdout)
+_log_console_handler.setFormatter(
+    logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
+log = logging.getLogger("vps")
+log.setLevel(logging.DEBUG)
+log.addHandler(_log_file_handler)
+log.addHandler(_log_console_handler)
+
+
+def dump_dmesg_usb(label: str = "") -> None:
+    """
+    Snapshot recent kernel USB/UVC messages from dmesg and write them to the
+    log.  Called automatically on the first camera read error and at recovery
+    so that USB isochronous transfer errors, xHCI resets, and UVC timeouts
+    are captured before the system fully breaks.
+    """
+    tag = f" ({label})" if label else ""
+    try:
+        result = subprocess.run(
+            ["dmesg", "--since", "-120s"],
+            capture_output=True, text=True, timeout=4)
+        lines = result.stdout.splitlines()
+        keywords = ("usb", "uvc", "xhci", "ehci", "video4linux", "v4l2",
+                    "error", "warn", "reset", "disconnect",
+                    "overflow", "timeout", "failed", "unable")
+        usb_lines = [l for l in lines
+                     if any(k in l.lower() for k in keywords)]
+        if usb_lines:
+            log.warning(f"dmesg snapshot{tag} — last 120s USB/UVC kernel messages "
+                        f"({len(usb_lines)} hits):\n" + "\n".join(usb_lines[-40:]))
+        else:
+            log.info(f"dmesg snapshot{tag}: no USB/UVC kernel messages in last 120s")
+    except Exception as exc:
+        log.warning(f"dmesg probe failed{tag}: {exc}")
+
+
+def log_v4l2_state(device: str, label: str = "") -> None:
+    """Query the actual V4L2 driver state via v4l2-ctl and write it to the log.
+    Use this at camera init and at the start of an error streak to verify that
+    the format/FPS/buffer-count the driver negotiated matches what we requested.
+    """
+    tag = f" ({label})" if label else ""
+    try:
+        result = subprocess.run(
+            ["v4l2-ctl", "-d", device,
+             "--get-fmt-video", "--get-parm",
+             "--get-ctrl",
+             "brightness,exposure_time_absolute,focus_absolute,focus_automatic_continuous"],
+            capture_output=True, text=True, timeout=3)
+        state = (result.stdout or result.stderr).strip()
+        log.info(f"V4L2 state {device}{tag}:\n{state}")
+    except FileNotFoundError:
+        log.warning(f"v4l2-ctl not found — cannot query {device}{tag}")
+    except Exception as exc:
+        log.warning(f"v4l2-ctl query failed for {device}{tag}: {exc}")
+
 
 # Pre-compute marker coordinate system (saves computation per frame)
 OBJ_POINTS = np.array([[-Defaults.TAG_SIZE/2,  Defaults.TAG_SIZE/2, 0],
@@ -104,6 +172,13 @@ class CameraCapture:
         self._thread: threading.Thread | None = None
         self._consecutive_errors = 0
         self._MAX_ERRORS = 30       # ~1 second of failures at 30fps before recovery
+        # Diagnostic counters — read by the watchdog thread without a lock
+        # (occasional torn reads are fine; these are for logging only)
+        self._frames_ok:   int         = 0
+        self._frames_err:  int         = 0
+        self._first_err_ts: float|None = None  # wall time of first read error in current streak
+        self._last_ok_ts:   float|None = None  # wall time of last successful read
+        self._dmesg_done:  bool        = False  # dump dmesg only once per error streak
 
     # ------------------------------------------------------------------
     def start(self):
@@ -135,24 +210,63 @@ class CameraCapture:
 
     # ------------------------------------------------------------------
     def _capture_loop(self):
+        name   = self._cam_info["name"]
+        cam_id = self._cam_info["id"]
+        device = Defaults.CAMERA_SYMLINKS[cam_id]
+
         while self._running:
             ret, frame = self._cap.read()
+
             if ret and frame is not None:
+                self._frames_ok += 1
+                self._last_ok_ts = time.time()
                 with self._lock:
                     self._frame = frame
-                    self._ok = True
+                    self._ok    = True
+                # Log recovery if we had an error streak
+                if self._consecutive_errors > 0:
+                    log.info(f"[{name}] Read recovered after {self._consecutive_errors} errors "
+                             f"(total ok={self._frames_ok} err={self._frames_err})")
                 self._consecutive_errors = 0
+                self._first_err_ts = None
+                self._dmesg_done   = False
+
             else:
+                now = time.time()
+                self._frames_err        += 1
                 self._consecutive_errors += 1
                 with self._lock:
                     self._ok = False
+
+                # Record when this streak started
+                if self._first_err_ts is None:
+                    self._first_err_ts = now
+                    log.warning(f"[{name}] First read error — "
+                                f"ok={self._frames_ok} err={self._frames_err} "
+                                f"cap.isOpened={self._cap.isOpened()}")
+
+                # On 3rd consecutive error: dump V4L2 state + dmesg for the log file
+                if not self._dmesg_done and self._consecutive_errors == 3:
+                    self._dmesg_done = True
+                    log_v4l2_state(device, label=f"{name} at error onset")
+                    dump_dmesg_usb(label=f"{name} error onset")
+
+                # Log every 5 errors to show progression
+                elif self._consecutive_errors % 5 == 0:
+                    streak_s = now - self._first_err_ts
+                    log.warning(f"[{name}] {self._consecutive_errors} consecutive errors "
+                                f"(streak={streak_s:.1f}s ok={self._frames_ok} err={self._frames_err})")
+
                 # Throttle retries to avoid hammering the USB bus with rapid V4L2
                 # ioctls — a tight spin with no sleep is the primary cause of hard
                 # camera crashes that require a computer reset.
                 time.sleep(1.0 / 30.0)
+
                 if self._consecutive_errors >= self._MAX_ERRORS:
-                    print(f"\n[{self._cam_info['name']}] {self._consecutive_errors} consecutive "
-                          f"read failures — attempting recovery...")
+                    log.error(f"[{name}] {self._consecutive_errors} consecutive failures — "
+                              f"triggering recovery "
+                              f"(ok={self._frames_ok} err={self._frames_err})")
+                    dump_dmesg_usb(label=f"{name} pre-recovery")
                     self._try_recover()
                     self._consecutive_errors = 0
 
@@ -251,6 +365,10 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
     # Re-apply buffer size after open as a belt-and-suspenders measure
     # (some OpenCV builds apply it only after open).
     cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    # Log what the V4L2 driver actually negotiated right after open.
+    # This tells us whether BUFFERSIZE=1 and FPS=15 were honoured.
+    log_v4l2_state(camera_device, label=f"cam{camera_id} after open")
     
     # Verify and reapply resolution if needed
     actual_w = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -276,13 +394,15 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
     max_fps = int(cam.get(cv2.CAP_PROP_FPS))
 
     # Log actual capture format
-    frameWidth = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frameWidth  = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH))
     frameHeight = int(cam.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"  Camera {camera_id}: {frameWidth}x{frameHeight} @ {max_fps} fps")
-    
-    # Log exposure settings
+    buf_size    = int(cam.get(cv2.CAP_PROP_BUFFERSIZE))
     exposure_value = cam.get(cv2.CAP_PROP_EXPOSURE)
-    print(f"  Exposure: {exposure_value}")
+    log.info(f"  Camera {camera_id}: {frameWidth}x{frameHeight} @ {max_fps} fps  "
+             f"buffer={buf_size}  exposure={exposure_value}")
+
+    # Final V4L2 state query — confirms FPS cap and buffer request were applied
+    log_v4l2_state(camera_device, label=f"cam{camera_id} fully configured")
 
     # Verify camera is available
     if not cam.isOpened():
@@ -884,7 +1004,33 @@ def main(argv=None):
         c = CameraCapture(cam_info)
         c.start()
         captures.append(c)
-    print(f"Started {len(captures)} background capture thread(s).")
+    log.info(f"Started {len(captures)} background capture thread(s).")
+
+    # --- Watchdog thread ---
+    # Every 15 s it logs per-camera frame counters, last-ok age, and thread
+    # liveness to vps_debug.log.  This gives a clear time-series so we can
+    # see exactly when a camera stopped delivering frames before the crash.
+    def _watchdog(captures_ref, interval: float = 15.0):
+        while any(c._running for c in captures_ref):
+            time.sleep(interval)
+            now = time.time()
+            lines = ["=== CAMERA HEALTH ==="]
+            for c in captures_ref:
+                last = c._last_ok_ts
+                age  = f"{now - last:.1f}s ago" if last else "never"
+                lines.append(
+                    f"  {c._cam_info['name']}: "
+                    f"frames_ok={c._frames_ok}  frames_err={c._frames_err}  "
+                    f"last_ok={age}  alive={c.is_alive}  "
+                    f"consecutive_errors={c._consecutive_errors}")
+            lines.append("=====================")
+            log.info("\n".join(lines))
+
+    _watchdog_thread = threading.Thread(
+        target=_watchdog, args=(captures,),
+        daemon=True, name="vps-watchdog")
+    _watchdog_thread.start()
+    log.info("Watchdog thread started (15 s interval) — output in vps_debug.log")
 
     # Main loop
     frame_times = [time.time()] * len(cameras)
