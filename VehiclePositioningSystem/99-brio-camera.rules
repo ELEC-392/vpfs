@@ -2,6 +2,14 @@
 # Install with: sudo cp 99-brio-camera.rules /etc/udev/rules.d/
 # Then reload: sudo udevadm control --reload-rules && sudo udevadm trigger
 
+# ---------------------------------------------------------------------------
+# Disable USB autosuspend for ALL Logitech BRIO 4K cameras (VID=046d PID=085e)
+# Without this the kernel powers down the cameras after ~2 minutes of
+# "selective suspend", causing all three to drop simultaneously.
+# ---------------------------------------------------------------------------
+ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", ATTR{power/autosuspend_delay_ms}="-1"
+
 # Camera 1 - USB port 4-1 (main color camera /dev/video0)
 SUBSYSTEM=="video4linux", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", KERNELS=="4-1*", ATTR{index}=="0", SYMLINK+="brio-camera1", MODE="0666", GROUP="video"
 

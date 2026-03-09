@@ -93,24 +93,56 @@ log.addHandler(_log_console_handler)
 
 def dump_dmesg_usb(label: str = "") -> None:
     """
-    Snapshot recent kernel USB/UVC messages from dmesg and write them to the
-    log.  Called automatically on the first camera read error and at recovery
-    so that USB isochronous transfer errors, xHCI resets, and UVC timeouts
-    are captured before the system fully breaks.
+    Snapshot recent kernel USB/UVC messages and write them to the log.
+    Tries journalctl -k first (readable without root on systemd systems),
+    then falls back to dmesg.  Called automatically on the first camera read
+    error and at recovery so that USB/UVC errors are captured in time.
     """
     tag = f" ({label})" if label else ""
+    raw = ""
+    source = "?"
     try:
-        # Try --since first (needs util-linux >= 2.23); fall back to tail.
+        # 1. journalctl -k: reads kernel ring buffer from systemd journal.
+        #    Readable by normal users on most Ubuntu/Debian systems even when
+        #    kernel.dmesg_restrict=1 blocks direct dmesg access.
         try:
-            result = subprocess.run(
-                ["dmesg", "--since", "-120s"],
-                capture_output=True, text=True, timeout=4)
-            raw = result.stdout
+            r = subprocess.run(
+                ["journalctl", "-k", "--since", "-120s", "--no-pager", "-o", "short"],
+                capture_output=True, text=True, timeout=6)
+            if r.returncode == 0 and r.stdout.strip():
+                raw = r.stdout
+                source = "journalctl -k"
         except Exception:
-            result = subprocess.run(
-                ["dmesg"],
-                capture_output=True, text=True, timeout=4)
-            raw = result.stdout
+            pass
+
+        # 2. dmesg --since (util-linux >= 2.23)
+        if not raw:
+            try:
+                r = subprocess.run(
+                    ["dmesg", "--since", "-120s"],
+                    capture_output=True, text=True, timeout=4)
+                if r.stdout.strip():
+                    raw = r.stdout
+                    source = "dmesg --since"
+            except Exception:
+                pass
+
+        # 3. Plain dmesg tail (last resort, also catches dmesg_restrict=0)
+        if not raw:
+            try:
+                r = subprocess.run(
+                    ["dmesg"],
+                    capture_output=True, text=True, timeout=4)
+                raw = r.stdout
+                source = "dmesg"
+            except Exception:
+                pass
+
+        if not raw.strip():
+            log.warning(f"dmesg snapshot{tag}: all sources returned empty "
+                        f"(kernel.dmesg_restrict may be 1 — run: sudo sysctl kernel.dmesg_restrict=0)")
+            return
+
         all_lines = raw.splitlines()
         keywords = ("usb", "uvc", "xhci", "ehci", "video4linux", "v4l2",
                     "error", "warn", "reset", "disconnect",
@@ -119,12 +151,11 @@ def dump_dmesg_usb(label: str = "") -> None:
         usb_lines = [l for l in all_lines
                      if any(k in l.lower() for k in keywords)]
         if usb_lines:
-            log.warning(f"dmesg snapshot{tag} — filtered USB/UVC kernel messages "
-                        f"({len(usb_lines)} hits):\n" + "\n".join(usb_lines[-40:]))
+            log.warning(f"dmesg snapshot{tag} [{source}] — {len(usb_lines)} USB/UVC hits:\n"
+                        + "\n".join(usb_lines[-40:]))
         else:
-            # No keyword matches — dump the raw tail so we don't miss anything
             tail = all_lines[-60:]
-            log.warning(f"dmesg snapshot{tag}: no keyword matches — "
+            log.warning(f"dmesg snapshot{tag} [{source}]: no keyword matches — "
                         f"raw last {len(tail)} lines:\n" + "\n".join(tail))
     except Exception as exc:
         log.warning(f"dmesg probe failed{tag}: {exc}")
