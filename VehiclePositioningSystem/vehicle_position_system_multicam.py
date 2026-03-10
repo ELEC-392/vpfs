@@ -80,13 +80,15 @@ except:
 # ---------------------------------------------------------------------------
 _log_file_handler = logging.handlers.RotatingFileHandler(
     "vps_debug.log", maxBytes=5 * 1024 * 1024, backupCount=2)
+_log_file_handler.setLevel(logging.INFO)   # DEBUG noise stays out of the file
 _log_file_handler.setFormatter(
     logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
 _log_console_handler = logging.StreamHandler(sys.stderr)  # stderr keeps log warnings out of the dashboard
+_log_console_handler.setLevel(logging.WARNING)  # console shows warnings+ only
 _log_console_handler.setFormatter(
     logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
 log = logging.getLogger("vps")
-log.setLevel(logging.DEBUG)
+log.setLevel(logging.DEBUG)  # logger itself stays at DEBUG so handlers can filter independently
 log.addHandler(_log_file_handler)
 log.addHandler(_log_console_handler)
 
@@ -488,10 +490,12 @@ class CameraCapture:
                                     f"ok={self._frames_ok} err={self._frames_err} "
                                     f"cap.isOpened={self._cap.isOpened()}")
 
-                    # On 3rd consecutive error: dump V4L2 state + dmesg
+                    # On 3rd consecutive error: dump dmesg only.
+                    # Do NOT call log_v4l2_state here — that sends UVC control
+                    # ioctls to a struggling controller and can trigger the xHCI
+                    # "HC died" cascade seen in crash logs.
                     if not self._dmesg_done and self._consecutive_errors == 3:
                         self._dmesg_done = True
-                        log_v4l2_state(device, label=f"{name} at error onset")
                         dump_dmesg_usb(label=f"{name} error onset")
 
                     # Log every 5 errors to show progression
@@ -545,8 +549,19 @@ class CameraCapture:
         try:
             force_release_camera(self._cap, device, cam_id)
             time.sleep(1.0)
-            reset_usb_device(device)
-            time.sleep(1.0)
+
+            # Check if the device node still exists.  If not, the xHCI host
+            # controller has died ("HC died; cleaning up" in dmesg).  In that
+            # case udevadm trigger is useless — only a PCI-level reset can bring
+            # the controller back.
+            device_exists = Path(device).exists()
+            if device_exists:
+                reset_usb_device(device)
+                time.sleep(1.0)
+            else:
+                log.warning(f"[{name}] Device {device} gone — attempting xHCI PCI reset")
+                reset_xhci_controller()
+                time.sleep(5.0)  # give kernel time to re-enumerate all ports
 
             new_cap = initialize_camera(cam_id, self._cam_info["K"], self._cam_info["D"])
             if new_cap is not None and new_cap.isOpened():
@@ -561,6 +576,63 @@ class CameraCapture:
             log.error(f"[{name}] Recovery raised an exception — disabling camera.\n"
                       f"{traceback.format_exc()}")
             self._running = False
+
+
+def reset_xhci_controller() -> bool:
+    """
+    Attempt a PCI Function Level Reset (FLR) on every xhci_hcd device.
+
+    When the xHCI host controller dies (kernel logs "HC died; cleaning up"),
+    the USB devices disappear from lsusb and udevadm/device-node resets are
+    useless.  Writing 1 to the PCI device's 'reset' sysfs file triggers an
+    FLR that restarts the controller and causes the kernel to re-enumerate
+    all attached USB devices — without a full reboot.
+
+    Preferred path: /usr/local/bin/xhci-reset (installed by apply_usb_fix.sh)
+    which can run as root via a sudoers NOPASSWD rule.
+    Fallback: direct sysfs write (works if already running as root).
+    """
+    # 1. Try the dedicated helper installed by apply_usb_fix.sh
+    helper = "/usr/local/bin/xhci-reset"
+    if Path(helper).exists():
+        try:
+            r = subprocess.run(
+                ["sudo", helper],
+                capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                log.info(f"  xHCI PCI reset via {helper}:\n{r.stdout.strip()}")
+                return True
+            else:
+                log.warning(f"  {helper} failed (code {r.returncode}): {r.stderr.strip()}")
+        except Exception as exc:
+            log.warning(f"  {helper} raised: {exc}")
+
+    # 2. Fallback: direct sysfs write (requires root)
+    xhci_root = Path("/sys/bus/pci/drivers/xhci_hcd")
+    reset_attempted = False
+
+    if xhci_root.exists():
+        for entry in xhci_root.iterdir():
+            reset_file = entry / "reset"
+            if not reset_file.exists():
+                try:
+                    reset_file = entry.resolve() / "reset"
+                except Exception:
+                    continue
+            if reset_file.exists():
+                try:
+                    reset_file.write_text("1")
+                    log.info(f"  PCI reset sent to {entry.name}")
+                    reset_attempted = True
+                except Exception as exc:
+                    log.warning(f"  PCI reset failed for {entry.name}: {exc}")
+    else:
+        log.warning("  /sys/bus/pci/drivers/xhci_hcd not found — cannot reset xHCI")
+
+    if not reset_attempted:
+        log.warning("  No xHCI PCI reset succeeded — run apply_usb_fix.sh to install "
+                    "the xhci-reset helper, or reboot to recover cameras")
+    return reset_attempted
 
 
 def force_release_camera(cam, camera_device, camera_id):

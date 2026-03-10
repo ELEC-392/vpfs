@@ -4,6 +4,7 @@
 #   1. Kernel boot parameter (survives reboots, affects all USB)
 #   2. PCI runtime PM disable (the real root cause — xHCI controller sleep)
 #   3. Systemd service + udev rules (persistent across reboots)
+#   4. xhci-reset helper + sudoers rule (software recovery of HC died crashes)
 
 set -u  # error on undefined variables, but don't abort on command failures
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -51,6 +52,33 @@ udevadm control --reload-rules
 udevadm trigger --action=add --subsystem-match=pci
 udevadm trigger --action=add --subsystem-match=usb
 echo "  Udev rules reloaded."
+
+echo ""
+echo "=== Step 6: xhci-reset helper + sudoers rule (for software recovery) ==="
+# This lets the VPS Python process reset the xHCI controller after an
+# 'HC died' crash, without requiring the script to run as root.
+cat > /usr/local/bin/xhci-reset << 'EOF'
+#!/bin/sh
+# Reset all PCI devices bound to xhci_hcd.  Called by the VPS recovery logic
+# after an xHCI host controller crash ("HC died; cleaning up" in dmesg).
+for pcidev in /sys/bus/pci/drivers/xhci_hcd/*/; do
+    reset="$pcidev/reset"
+    if [ -f "$reset" ]; then
+        echo 1 > "$reset" && echo "xhci-reset: reset $pcidev" || echo "xhci-reset: failed $pcidev"
+    fi
+done
+EOF
+chmod +x /usr/local/bin/xhci-reset
+
+SUDOERS_FILE=/etc/sudoers.d/xhci-reset
+SUDOERS_LINE="%sudo ALL=(root) NOPASSWD: /usr/local/bin/xhci-reset"
+if [ -f "$SUDOERS_FILE" ] && grep -qF "$SUDOERS_LINE" "$SUDOERS_FILE" 2>/dev/null; then
+    echo "  Sudoers rule already present — skipping."
+else
+    echo "$SUDOERS_LINE" > "$SUDOERS_FILE"
+    chmod 440 "$SUDOERS_FILE"
+    echo "  Installed sudoers rule: any member of 'sudo' group can run xhci-reset without password."
+fi
 
 echo ""
 echo "=== Verify ==="
