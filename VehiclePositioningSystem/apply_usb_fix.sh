@@ -80,8 +80,22 @@ else
     echo "  Installed sudoers rule: any member of 'sudo' group can run xhci-reset without password."
 fi
 
-echo ""
-echo "=== Verify ==="
+echo ""echo "=== Step 7: Allow non-root processes to read kernel ring buffer (dmesg_restrict) ==="
+# With kernel.dmesg_restrict=1 (Ubuntu default), the VPS process cannot capture
+# kernel USB/xHCI messages at crash time — every dmesg snapshot is empty.
+# Setting it to 0 lets the Python process record the exact kernel error that
+# caused the crash ("HC died; cleaning up", BABBLE_DETECTED_ERROR, etc.).
+SYSCTL_CONF=/etc/sysctl.d/99-dmesg-unrestrict.conf
+sysctl -w kernel.dmesg_restrict=0
+if [ ! -f "$SYSCTL_CONF" ] || ! grep -q "dmesg_restrict=0" "$SYSCTL_CONF" 2>/dev/null; then
+    echo "kernel.dmesg_restrict=0" > "$SYSCTL_CONF"
+    echo "  Written $SYSCTL_CONF (persists across reboots)."
+else
+    echo "  $SYSCTL_CONF already present — skipping."
+fi
+echo "  kernel.dmesg_restrict is now: $(sysctl -n kernel.dmesg_restrict)"
+
+echo ""echo "=== Verify ==="
 echo "  xHCI PCI power/control:"
 for pcidev in /sys/bus/pci/devices/*/; do
     driver=$(readlink "$pcidev/driver" 2>/dev/null | xargs basename 2>/dev/null || true)

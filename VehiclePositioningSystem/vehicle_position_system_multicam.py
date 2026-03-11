@@ -192,63 +192,6 @@ def log_v4l2_state(device: str, label: str = "") -> None:
         log.warning(f"v4l2-ctl query failed for {device}{tag}: {exc}")
 
 
-def disable_usb_autosuspend(device: str) -> None:
-    """
-    Disable USB autosuspend for the USB device backing a /dev/videoN symlink.
-
-    Linux USB autosuspend can silently power-down a camera after a period of
-    perceived inactivity (default 2 s for many kernels/hubs), causing all
-    cameras on the same controller to drop simultaneously — with no dmesg
-    error, just a clean disappearance.  Writing 'on' to power/control and
-    '-1' to power/autosuspend_delay_ms prevents this entirely.
-
-    The sysfs path is resolved via udevadm so it works with symlinks like
-    /dev/brio-camera0.
-    """
-    try:
-        # Resolve the sysfs device path for this /dev node
-        r = subprocess.run(
-            ["udevadm", "info", "-q", "path", "-n", device],
-            capture_output=True, text=True, timeout=3)
-        if r.returncode != 0 or not r.stdout.strip():
-            log.debug(f"disable_usb_autosuspend: udevadm could not resolve {device}")
-            return
-
-        sysfs = Path("/sys") / r.stdout.strip().lstrip("/")
-
-        # Walk up the sysfs tree to find the USB device directory
-        # (identified by the presence of idVendor)
-        p = sysfs
-        usb_dev = None
-        while p != p.parent:
-            if (p / "idVendor").exists():
-                usb_dev = p
-                break
-            p = p.parent
-
-        if usb_dev is None:
-            log.debug(f"disable_usb_autosuspend: no USB device node found for {device}")
-            return
-
-        vendor = (usb_dev / "idVendor").read_text().strip()
-        product = (usb_dev / "idProduct").read_text().strip()
-
-        power_control  = usb_dev / "power" / "control"
-        autosuspend_ms = usb_dev / "power" / "autosuspend_delay_ms"
-
-        power_control.write_text("on")
-        autosuspend_ms.write_text("-1")
-
-        log.info(f"USB autosuspend disabled for {device} "
-                 f"(vendor={vendor} product={product} sysfs={usb_dev})")
-
-    except PermissionError:
-        log.debug(f"disable_usb_autosuspend: permission denied for {device} "
-                  f"(use apply_usb_fix.sh to install the systemd service)")
-    except Exception as exc:
-        log.debug(f"disable_usb_autosuspend failed for {device}: {exc}")
-
-
 # ---------------------------------------------------------------------------
 # In-place terminal dashboard
 # ---------------------------------------------------------------------------
@@ -400,6 +343,11 @@ class CameraCapture:
     # resets that would overwhelm the xHCI controller.
     _recovery_lock = threading.Lock()
 
+    # Ensures exactly one PCI reset occurs per HC-died event, regardless of
+    # how many cameras trigger recovery simultaneously.  Reset to False by
+    # the watchdog once all cameras are alive again.
+    _pci_reset_done = False
+
     # Trigger recovery if no good frame has been received for this many seconds.
     # With a blocking cap.read() that may stall 7-8 s per call, a count-based
     # threshold alone would take minutes to fire; time-based fires in ~30 s.
@@ -547,21 +495,41 @@ class CameraCapture:
 
         log.warning(f"[{name}] Starting recovery sequence...")
         try:
-            force_release_camera(self._cap, device, cam_id)
-            time.sleep(1.0)
+            # Release the V4L2 file descriptor so the kernel can re-bind it
+            # after the controller comes back.  A single release() is enough;
+            # extra retries only add dead delay when the HC is gone.
+            if self._cap is not None:
+                try:
+                    self._cap.release()
+                except Exception:
+                    pass
+            time.sleep(0.5)
 
-            # Check if the device node still exists.  If not, the xHCI host
-            # controller has died ("HC died; cleaning up" in dmesg).  In that
-            # case udevadm trigger is useless — only a PCI-level reset can bring
-            # the controller back.
-            device_exists = Path(device).exists()
-            if device_exists:
-                reset_usb_device(device)
-                time.sleep(1.0)
-            else:
-                log.warning(f"[{name}] Device {device} gone — attempting xHCI PCI reset")
-                reset_xhci_controller()
-                time.sleep(5.0)  # give kernel time to re-enumerate all ports
+            # Check whether the device node still exists.  When the xHCI host
+            # controller dies ("HC died; cleaning up" in dmesg) all /dev/brioN
+            # nodes disappear and every udevadm/USB-layer reset is useless.
+            # Only a PCI Function Level Reset (FLR) can bring the controller
+            # back.  Use _pci_reset_done to ensure only the FIRST camera that
+            # enters recovery triggers the reset; subsequent cameras skip it
+            # and simply wait for re-enumeration.
+            if not Path(device).exists():
+                if not CameraCapture._pci_reset_done:
+                    log.warning(f"[{name}] Device {device} gone — performing xHCI PCI reset")
+                    CameraCapture._pci_reset_done = True
+                    reset_xhci_controller()
+                else:
+                    log.warning(f"[{name}] Device {device} gone — "
+                                f"xHCI reset already done, waiting for re-enumeration")
+
+                # Poll for the device node to reappear (up to 30 s).
+                # Re-enumeration after PCI FLR typically takes 10-15 s.
+                for _ in range(30):
+                    time.sleep(1.0)
+                    if Path(device).exists():
+                        log.info(f"[{name}] Device {device} reappeared after reset")
+                        break
+                else:
+                    log.warning(f"[{name}] Device {device} still absent after 30 s wait")
 
             new_cap = initialize_camera(cam_id, self._cam_info["K"], self._cam_info["D"])
             if new_cap is not None and new_cap.isOpened():
@@ -635,70 +603,10 @@ def reset_xhci_controller() -> bool:
     return reset_attempted
 
 
-def force_release_camera(cam, camera_device, camera_id):
-    """
-    Aggressively release camera with multiple attempts and USB reset.
-    """
-    if cam is None:
-        return
-
-    log.info(f"  Releasing camera {camera_id}...")
-
-    # Try normal release multiple times
-    for attempt in range(3):
-        try:
-            cam.release()
-            time.sleep(0.2)
-            break
-        except Exception as e:
-            log.warning(f"    Release attempt {attempt+1} failed: {e}")
-            time.sleep(0.1)
-
-    # Brief pause to let the release propagate.
-    time.sleep(0.3)
-
-    # NOTE: Do NOT use 'fuser -k' here — if cam.release() leaves any fd open
-    # (a known OpenCV/V4L2 race) that command would kill this process itself.
-
-    log.info(f"  Camera {camera_id} released")
-
-
-def reset_usb_device(camera_device):
-    """
-    Attempt to reset USB device using udevadm.
-    This can help recover from hard crashes without rebooting.
-    """
-    try:
-        log.info(f"  Attempting USB device reset for {camera_device}...")
-
-        # Trigger udev action to re-enumerate device
-        result = subprocess.run(
-            ["udevadm", "trigger", "--action=change", camera_device],
-            capture_output=True, text=True, timeout=5)
-        time.sleep(1.0)
-
-        if result.returncode == 0:
-            log.info(f"  USB device reset successful")
-            return True
-        else:
-            log.warning(f"  USB device reset failed (code {result.returncode}): "
-                        f"{result.stderr.strip()}")
-            return False
-    except Exception as e:
-        log.warning(f"  USB reset exception: {e}")
-        return False
-
-
 def initialize_camera(camera_id, CAM_K, CAM_D):
     """Initialize a single camera with proper settings."""
     camera_device = Defaults.CAMERA_SYMLINKS[camera_id]
     log.info(f"Initializing camera {camera_id} ({camera_device})...")
-
-    # Disable USB autosuspend before opening the device.
-    # This is the most common cause of simultaneous multi-camera drops on Linux:
-    # the USB power manager silently suspends the device after a few seconds of
-    # perceived inactivity, requiring a computer reset to recover.
-    disable_usb_autosuspend(camera_device)
 
     # Reset camera controls to known defaults (use resolved v4l2-ctl path)
     v4l = _V4L2_CTL
@@ -738,9 +646,7 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
     # Cap FPS explicitly — three Brio 4K cameras at the default ~30fps MJPEG
     # can saturate a single USB 3.0 controller, causing isochronous transfer
     # errors that progressively corrupt the V4L2 state and require a reboot.
-    # 15fps halves per-camera USB bandwidth while still being faster than the
-    # fastest main-loop update rate (10Hz default).
-    cam.set(cv2.CAP_PROP_FPS, 15)
+    cam.set(cv2.CAP_PROP_FPS, 5)
 
     # Camera control settings (applied via OpenCV as backup)
     cam.set(cv2.CAP_PROP_AUTOFOCUS, 0)      # Disable autofocus
@@ -1269,7 +1175,7 @@ def main(argv=None):
     """
     # Parse command-line flags
     show_display = True
-    update_frequency_hz = 10  # Default 10Hz update rate
+    update_frequency_hz = 5  # Default 5Hz update rate
     
     if argv:
         if '--no-display' in argv:
@@ -1283,11 +1189,11 @@ def main(argv=None):
                 try:
                     update_frequency_hz = float(argv[idx + 1])
                     if update_frequency_hz <= 0 or update_frequency_hz > 60:
-                        print(f"Warning: Invalid frequency {update_frequency_hz}Hz, using default 10Hz")
-                        update_frequency_hz = 10
+                        print(f"Warning: Invalid frequency {update_frequency_hz}Hz, using default 5Hz")
+                        update_frequency_hz = 5
                 except ValueError:
-                    print(f"Warning: Invalid frequency value, using default 10Hz")
-                    update_frequency_hz = 10
+                    print(f"Warning: Invalid frequency value, using default 5Hz")
+                    update_frequency_hz = 5
 
         # Connect to VPFS backend if --vpfs flag is provided
         # Usage: --vpfs                  (connects to http://localhost:5000)
@@ -1389,6 +1295,11 @@ def main(argv=None):
                     f"consecutive_errors={c._consecutive_errors}")
             lines.append("=====================")
             log.info("\n".join(lines))
+            # Once all cameras are alive again after a PCI reset, clear the
+            # flag so the next HC-died event can trigger a fresh reset.
+            if CameraCapture._pci_reset_done and all(c.is_alive for c in captures_ref):
+                CameraCapture._pci_reset_done = False
+                log.info("All cameras alive — PCI reset flag cleared for next failure cycle.")
 
     _watchdog_thread = threading.Thread(
         target=_watchdog, args=(captures,),
