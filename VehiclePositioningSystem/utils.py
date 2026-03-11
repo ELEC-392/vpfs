@@ -16,11 +16,19 @@ Conventions:
   - det.pose_t: 3x1 translation (camera-to-tag), in meters.
 """
 import os
+import sys
 import json
+import logging
+import logging.handlers
+import shutil
+import subprocess
+import threading
+import time
 import numpy as np
-import ref_tags 
+import ref_tags
 import cv2
 
+from pathlib import Path
 from numpy.typing import *
 from typing import Dict, Tuple
 
@@ -377,4 +385,381 @@ def compute_tag_poses(detections, cam_pos: ArrayLike) -> Dict[int, Tuple[int, in
 
     return tag_poses
 
+
+# ---------------------------------------------------------------------------
+# Shared logging setup
+# ---------------------------------------------------------------------------
+
+def setup_vps_logging(log_file: str = "vps_debug.log") -> logging.Logger:
+    """
+    Create (or retrieve) the shared 'vps' logger with a rotating file handler
+    (INFO+) and a stderr console handler (WARNING+).  Safe to call from both
+    the single-camera and multi-camera scripts — handlers are added only once.
+    """
+    logger = logging.getLogger("vps")
+    if logger.handlers:
+        return logger  # already configured
+    logger.setLevel(logging.DEBUG)
+
+    fh = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=5 * 1024 * 1024, backupCount=2)
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(logging.Formatter(
+        "[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+
+    ch = logging.StreamHandler(sys.stderr)
+    ch.setLevel(logging.WARNING)
+    ch.setFormatter(logging.Formatter(
+        "[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
+
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    return logger
+
+
+# ---------------------------------------------------------------------------
+# USB / kernel diagnostics
+# ---------------------------------------------------------------------------
+
+# Resolve v4l2-ctl once at import time — lives in /usr/sbin on most distros
+# but pyenv virtualenvs only have /usr/bin in PATH.
+_V4L2_CTL = shutil.which("v4l2-ctl") or "/usr/sbin/v4l2-ctl"
+
+
+def dump_dmesg_usb(label: str = "") -> None:
+    """
+    Snapshot recent kernel USB/UVC messages and write them to the shared log.
+    Tries journalctl -k (readable without root on systemd systems) first, then
+    falls back to dmesg.  Call on the first camera read error and before USB
+    recovery attempts to capture kernel errors while they are still in the ring
+    buffer.
+    """
+    _log = logging.getLogger("vps")
+    tag  = f" ({label})" if label else ""
+    raw = ""
+    source = "?"
+    try:
+        # 1. journalctl -k
+        try:
+            r = subprocess.run(
+                ["journalctl", "-k", "--since", "-120s", "--no-pager", "-o", "short"],
+                capture_output=True, text=True, timeout=6)
+            real_lines = [l for l in r.stdout.splitlines() if not l.startswith("-- ")]
+            if r.returncode == 0 and real_lines:
+                raw = r.stdout
+                source = "journalctl -k"
+        except Exception:
+            pass
+
+        # 2. dmesg --since (util-linux >= 2.23)
+        if not raw:
+            try:
+                r = subprocess.run(
+                    ["dmesg", "--since", "-120s"],
+                    capture_output=True, text=True, timeout=4)
+                if r.stdout.strip():
+                    raw = r.stdout
+                    source = "dmesg --since"
+            except Exception:
+                pass
+
+        # 3. Plain dmesg tail
+        if not raw:
+            try:
+                r = subprocess.run(["dmesg"], capture_output=True, text=True, timeout=4)
+                raw = r.stdout
+                source = "dmesg"
+            except Exception:
+                pass
+
+        if not raw.strip():
+            _log.warning(f"dmesg snapshot{tag}: all sources returned empty "
+                         f"(kernel.dmesg_restrict may be 1 — "
+                         f"run: sudo sysctl kernel.dmesg_restrict=0)")
+            return
+
+        all_lines = raw.splitlines()
+        keywords  = ("usb", "uvc", "xhci", "ehci", "video4linux", "v4l2",
+                     "error", "warn", "reset", "disconnect",
+                     "overflow", "timeout", "failed", "unable",
+                     "suspend", "resume", "power", "autosuspend")
+        usb_lines = [l for l in all_lines if any(k in l.lower() for k in keywords)]
+        if usb_lines:
+            _log.warning(f"dmesg snapshot{tag} [{source}] — {len(usb_lines)} USB/UVC hits:\n"
+                         + "\n".join(usb_lines[-40:]))
+        else:
+            tail = all_lines[-60:]
+            _log.warning(f"dmesg snapshot{tag} [{source}]: no keyword matches — "
+                         f"raw last {len(tail)} lines:\n" + "\n".join(tail))
+    except Exception as exc:
+        logging.getLogger("vps").warning(f"dmesg probe failed{tag}: {exc}")
+
+
+def log_v4l2_state(device: str, label: str = "") -> None:
+    """Query the actual V4L2 driver state via v4l2-ctl and write it to the log."""
+    _log = logging.getLogger("vps")
+    tag  = f" ({label})" if label else ""
+    if not Path(_V4L2_CTL).exists():
+        _log.debug(f"v4l2-ctl not found at {_V4L2_CTL} — cannot query {device}{tag}")
+        return
+    try:
+        result = subprocess.run(
+            [_V4L2_CTL, "-d", device,
+             "--get-fmt-video", "--get-parm",
+             "--get-ctrl",
+             "brightness,exposure_time_absolute,focus_absolute,focus_automatic_continuous"],
+            capture_output=True, text=True, timeout=3)
+        state = (result.stdout or result.stderr).strip()
+        _log.info(f"V4L2 state {device}{tag}:\n{state}")
+    except Exception as exc:
+        _log.warning(f"v4l2-ctl query failed for {device}{tag}: {exc}")
+
+
+# Pre-computed marker corner geometry (shared by both VPS scripts).
+OBJ_POINTS = np.array([
+    [-Defaults.TAG_SIZE / 2,  Defaults.TAG_SIZE / 2, 0],
+    [ Defaults.TAG_SIZE / 2,  Defaults.TAG_SIZE / 2, 0],
+    [ Defaults.TAG_SIZE / 2, -Defaults.TAG_SIZE / 2, 0],
+    [-Defaults.TAG_SIZE / 2, -Defaults.TAG_SIZE / 2, 0],
+], dtype=np.float32)
+
+
+# ---------------------------------------------------------------------------
+# ArUco detection helper
+# ---------------------------------------------------------------------------
+
+def detect_aruco(
+    frame: np.ndarray,
+    CAM_K: np.ndarray,
+    CAM_D: np.ndarray,
+    DETECTOR,
+    ARUCO_DICT,
+    ARUCO_PARAMS,
+):
+    """
+    Detect ArUco markers in *frame* and compute their 6-DoF poses.
+
+    Corner undistortion strategy (same as multicam script):
+    - Detect on the original (distorted) grayscale image so corner accuracy
+      benefits from the full pixel grid.
+    - Undistort only the detected corner points with cv2.undistortPoints before
+      solvePnP.  This avoids the focal-length shrinkage that full-image
+      undistortion with alpha=1 introduces and is significantly cheaper.
+
+    Returns:
+        detections : list[ArucoDetection]
+        rvecs      : list of (3,1) rotation vectors (original OpenCV convention)
+        tvecs      : list of (3,1) translation vectors
+        corners    : raw corner arrays from detectMarkers (for draw_aruco_overlays)
+        ids        : id array from detectMarkers (may be None)
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    if DETECTOR is not None:
+        corners, ids, _ = DETECTOR.detectMarkers(gray)
+    else:
+        corners, ids, _ = cv2.aruco.detectMarkers(
+            gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
+
+    rvecs: list      = []
+    tvecs: list      = []
+    detections: list = []
+
+    if ids is not None and len(ids) > 0:
+        for i, corner in enumerate(corners):
+            pts = corner.reshape(-1, 1, 2).astype(np.float32)
+            pts_u = cv2.undistortPoints(pts, CAM_K, CAM_D, P=CAM_K)
+            success, rvec, tvec = cv2.solvePnP(
+                OBJ_POINTS, pts_u, CAM_K, None,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE)
+            if success:
+                rvecs.append(rvec)
+                tvecs.append(tvec)
+                detections.append(ArucoDetection(
+                    tag_id=int(ids[i][0]),
+                    rvec=rvec.reshape(3),
+                    tvec=tvec.reshape(3),
+                    corners=corner))
+
+    return detections, rvecs, tvecs, corners, ids
+
+
+# ---------------------------------------------------------------------------
+# Minimal background capture buffer
+# ---------------------------------------------------------------------------
+
+class CameraFrameBuffer:
+    """
+    Background thread that continuously drains the V4L2 kernel buffer and
+    always makes the latest frame available via get().
+
+    Without this, if the main loop runs slower than the camera FPS the
+    V4L2 kernel buffer fills up, the driver triggers select() timeouts,
+    and the camera appears to freeze or crash.  A background reader thread
+    draining at camera speed keeps the buffer empty regardless of main-loop
+    frequency.
+
+    Usage::
+
+        buf = CameraFrameBuffer(cap)
+        ok, frame = buf.get()   # latest frame, non-blocking
+        buf.stop()              # join the thread before exiting
+    """
+
+    def __init__(self, cap: cv2.VideoCapture):
+        self._cap     = cap
+        self._lock    = threading.Lock()
+        self._frame   = None
+        self._ok      = False
+        self._running = True
+        self._thread  = threading.Thread(
+            target=self._loop, daemon=True, name="cam-buf")
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while self._running:
+            ok, frame = self._cap.read()
+            with self._lock:
+                self._ok = ok
+                if ok and frame is not None:
+                    self._frame = frame
+
+    def get(self):
+        """Return (ok, frame) — the most recently captured frame."""
+        with self._lock:
+            ok  = self._ok
+            ref = self._frame
+        return ok, (ref.copy() if ref is not None else None)
+
+    def stop(self) -> None:
+        """Signal the background thread to exit and wait for it."""
+        self._running = False
+        self._thread.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# In-place terminal dashboard
+# ---------------------------------------------------------------------------
+
+class TerminalDashboard:
+    """
+    Redraws a fixed block of text in-place on stdout using ANSI escape codes.
+    Works for both single-camera and multi-camera scripts.  Log warnings/errors
+    are routed to stderr and appear above the dashboard without disrupting it.
+    """
+    _RESET  = "\033[0m"
+    _BOLD   = "\033[1m"
+    _GREEN  = "\033[32m"
+    _YELLOW = "\033[33m"
+    _RED    = "\033[31m"
+    _CYAN   = "\033[36m"
+    _WHITE  = "\033[37m"
+
+    def __init__(self):
+        self._anchored = False
+
+    def render(self, lines: list) -> None:
+        """Overwrite the previously rendered block with new content."""
+        if not self._anchored:
+            sys.stdout.write("\0337")   # ESC 7 — DEC Save Cursor
+            self._anchored = True
+        else:
+            sys.stdout.write("\0338\033[J")  # ESC 8 — Restore; erase to end
+        sys.stdout.write("\n".join(lines) + "\n")
+        sys.stdout.flush()
+
+    def build(
+        self,
+        update_count:         int,
+        start_time:           float,
+        loop_ms:              float,
+        target_hz:            float,
+        actual_hz:            float,
+        camera_stats:         list,   # list of dicts — see below
+        all_marker_positions: dict,
+        mobile_markers:       dict,
+        vpfs_sent:            bool,
+        title:                str = "POSITIONING SYSTEM",
+    ) -> list:
+        """
+        Build the dashboard line list.
+
+        ``camera_stats`` is a list of dicts with keys:
+            name              str
+            frames_ok         int
+            frames_err        int
+            last_ok_ts        float | None
+            is_alive          bool
+            consecutive_errors int
+        """
+        REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
+        W = 72
+        now      = time.time()
+        uptime_s = int(now - start_time)
+        h = uptime_s // 3600
+        m = (uptime_s % 3600) // 60
+        s = uptime_s % 60
+        ts = time.strftime("%H:%M:%S")
+
+        lines = []
+        B, R, G, Y, C = self._BOLD, self._RESET, self._GREEN, self._YELLOW, self._CYAN
+
+        lines.append(f"{B}{'\u2500'*W}{R}")
+        lines.append(f"{B}  {title}{R}  "
+                     f"{C}{ts}{R}  uptime {h:02d}:{m:02d}:{s:02d}  updates {update_count}")
+        lines.append(f"{B}{'\u2500'*W}{R}")
+
+        fps_color = (G if actual_hz >= target_hz * 0.85 else
+                     Y if actual_hz >= target_hz * 0.50 else self._RED)
+        lines.append(f"  {B}Rate :{R} {fps_color}{actual_hz:5.2f} Hz{R}  "
+                     f"target {target_hz:.0f} Hz   loop {loop_ms:5.1f} ms")
+
+        lines.append(f"  {B}Cams :{R}")
+        for cs in camera_stats:
+            last   = cs["last_ok_ts"]
+            age    = f"{now - last:.1f}s" if last else "never"
+            errs   = cs["frames_err"]
+            streak = cs["consecutive_errors"]
+            if not cs["is_alive"]:
+                status = f"{self._RED}DEAD{R}"
+            elif streak > 0:
+                status = f"{self._RED}ERR\u00d7{streak}{R}"
+            elif errs == 0:
+                status = f"{G}OK{R}"
+            else:
+                status = f"{Y}OK (errs={errs}){R}"
+            lines.append(
+                f"    {cs['name']:12s}  "
+                f"ok={cs['frames_ok']:<7d}  err={errs:<5d}  "
+                f"last_ok={age:>7s}  {status}")
+
+        lines.append(f"{B}{'\u2500'*W}{R}")
+
+        lines.append(f"  {B}Reference markers:{R}")
+        ref_ids = sorted(tid for tid in all_marker_positions if tid in REFERENCE_TAG_IDS)
+        if ref_ids:
+            for tid in ref_ids:
+                x, y, z, _ = all_marker_positions[tid]
+                lines.append(f"    #{tid:2d}  X={x*100:7.1f} cm   Y={y*100:7.1f} cm   "
+                             f"dist={np.sqrt(x**2+y**2)*100:6.1f} cm")
+        else:
+            lines.append(f"    {Y}(none visible \u2014 need at least one of 95-99){R}")
+
+        lines.append(f"  {B}Mobile markers:{R}")
+        if mobile_markers:
+            for tid in sorted(mobile_markers):
+                x, y, z, heading = mobile_markers[tid]
+                sent = f"  {G}\u2191 sent{R}" if vpfs_sent else ""
+                lines.append(
+                    f"    #{tid:2d}  X={x*100:7.1f} cm   Y={y*100:7.1f} cm   "
+                    f"hdg={np.degrees(heading):6.1f}\u00b0   "
+                    f"dist={np.sqrt(x**2+y**2)*100:6.1f} cm{sent}")
+        else:
+            lines.append(f"    {Y}(none detected){R}")
+
+        lines.append(f"{B}{'\u2500'*W}{R}")
+        lines.append(f"  {self._WHITE}Ctrl+C to quit   warnings \u2192 stderr   "
+                     f"full log \u2192 vps_debug.log{R}")
+
+        return lines
 

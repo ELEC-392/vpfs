@@ -63,7 +63,14 @@ from utils import (
     draw_aruco_overlays,
     compute_camera_pos,
     compute_tag_poses,
-    det_to_transform_mat
+    det_to_transform_mat,
+    setup_vps_logging,
+    dump_dmesg_usb,
+    log_v4l2_state,
+    _V4L2_CTL,
+    OBJ_POINTS,
+    detect_aruco,
+    TerminalDashboard,
 )
 
 # Check for CUDA/GPU support
@@ -76,250 +83,7 @@ try:
 except:
     print("GPU/CUDA not available, using CPU only")
 
-# ---------------------------------------------------------------------------
-# Logging — writes to the terminal AND a rotating file (vps_debug.log).
-# The file persists across crashes / terminal clears for post-mortem analysis.
-# ---------------------------------------------------------------------------
-_log_file_handler = logging.handlers.RotatingFileHandler(
-    "vps_debug.log", maxBytes=5 * 1024 * 1024, backupCount=2)
-_log_file_handler.setLevel(logging.INFO)   # DEBUG noise stays out of the file
-_log_file_handler.setFormatter(
-    logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
-_log_console_handler = logging.StreamHandler(sys.stderr)  # stderr keeps log warnings out of the dashboard
-_log_console_handler.setLevel(logging.WARNING)  # console shows warnings+ only
-_log_console_handler.setFormatter(
-    logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
-log = logging.getLogger("vps")
-log.setLevel(logging.DEBUG)  # logger itself stays at DEBUG so handlers can filter independently
-log.addHandler(_log_file_handler)
-log.addHandler(_log_console_handler)
-
-
-def dump_dmesg_usb(label: str = "") -> None:
-    """
-    Snapshot recent kernel USB/UVC messages and write them to the log.
-    Tries journalctl -k first (readable without root on systemd systems),
-    then falls back to dmesg.  Called automatically on the first camera read
-    error and at recovery so that USB/UVC errors are captured in time.
-    """
-    tag = f" ({label})" if label else ""
-    raw = ""
-    source = "?"
-    try:
-        # 1. journalctl -k: reads kernel ring buffer from systemd journal.
-        #    Readable by normal users on most Ubuntu/Debian systems even when
-        #    kernel.dmesg_restrict=1 blocks direct dmesg access.
-        try:
-            r = subprocess.run(
-                ["journalctl", "-k", "--since", "-120s", "--no-pager", "-o", "short"],
-                capture_output=True, text=True, timeout=6)
-            # Filter out journal metadata lines ("-- No entries --", "-- Logs begin...", etc.)
-            real_lines = [l for l in r.stdout.splitlines() if not l.startswith("-- ")]
-            if r.returncode == 0 and real_lines:
-                raw = r.stdout
-                source = "journalctl -k"
-        except Exception:
-            pass
-
-        # 2. dmesg --since (util-linux >= 2.23)
-        if not raw:
-            try:
-                r = subprocess.run(
-                    ["dmesg", "--since", "-120s"],
-                    capture_output=True, text=True, timeout=4)
-                if r.stdout.strip():
-                    raw = r.stdout
-                    source = "dmesg --since"
-            except Exception:
-                pass
-
-        # 3. Plain dmesg tail (last resort, also catches dmesg_restrict=0)
-        if not raw:
-            try:
-                r = subprocess.run(
-                    ["dmesg"],
-                    capture_output=True, text=True, timeout=4)
-                raw = r.stdout
-                source = "dmesg"
-            except Exception:
-                pass
-
-        if not raw.strip():
-            log.warning(f"dmesg snapshot{tag}: all sources returned empty "
-                        f"(kernel.dmesg_restrict may be 1 — run: sudo sysctl kernel.dmesg_restrict=0)")
-            return
-
-        all_lines = raw.splitlines()
-        keywords = ("usb", "uvc", "xhci", "ehci", "video4linux", "v4l2",
-                    "error", "warn", "reset", "disconnect",
-                    "overflow", "timeout", "failed", "unable", "suspend",
-                    "resume", "power", "autosuspend")
-        usb_lines = [l for l in all_lines
-                     if any(k in l.lower() for k in keywords)]
-        if usb_lines:
-            log.warning(f"dmesg snapshot{tag} [{source}] — {len(usb_lines)} USB/UVC hits:\n"
-                        + "\n".join(usb_lines[-40:]))
-        else:
-            tail = all_lines[-60:]
-            log.warning(f"dmesg snapshot{tag} [{source}]: no keyword matches — "
-                        f"raw last {len(tail)} lines:\n" + "\n".join(tail))
-    except Exception as exc:
-        log.warning(f"dmesg probe failed{tag}: {exc}")
-
-
-# Resolve v4l2-ctl once at startup — it lives in /usr/sbin on most distros
-# but pyenv virtualenvs only have /usr/bin in PATH.
-_V4L2_CTL = shutil.which("v4l2-ctl") or "/usr/sbin/v4l2-ctl"
-
-
-def log_v4l2_state(device: str, label: str = "") -> None:
-    """Query the actual V4L2 driver state via v4l2-ctl and write it to the log.
-    Use this at camera init and at the start of an error streak to verify that
-    the format/FPS/buffer-count the driver negotiated matches what we requested.
-    """
-    tag = f" ({label})" if label else ""
-    if not Path(_V4L2_CTL).exists():
-        log.debug(f"v4l2-ctl not found at {_V4L2_CTL} — cannot query {device}{tag}")
-        return
-    try:
-        result = subprocess.run(
-            [_V4L2_CTL, "-d", device,
-             "--get-fmt-video", "--get-parm",
-             "--get-ctrl",
-             "brightness,exposure_time_absolute,focus_absolute,focus_automatic_continuous"],
-            capture_output=True, text=True, timeout=3)
-        state = (result.stdout or result.stderr).strip()
-        log.info(f"V4L2 state {device}{tag}:\n{state}")
-    except Exception as exc:
-        log.warning(f"v4l2-ctl query failed for {device}{tag}: {exc}")
-
-
-# ---------------------------------------------------------------------------
-# In-place terminal dashboard
-# ---------------------------------------------------------------------------
-class TerminalDashboard:
-    """
-    Redraws a fixed block of text in-place on stdout using ANSI escape codes.
-    Log warnings/errors are routed to stderr and appear above the dashboard.
-    """
-    # ANSI helpers
-    _RESET  = "\033[0m"
-    _BOLD   = "\033[1m"
-    _GREEN  = "\033[32m"
-    _YELLOW = "\033[33m"
-    _RED    = "\033[31m"
-    _CYAN   = "\033[36m"
-    _WHITE  = "\033[37m"
-
-    def __init__(self):
-        self._anchored = False  # True once we've saved the cursor anchor
-
-    # ------------------------------------------------------------------
-    def render(self, lines: list) -> None:
-        """Overwrite the previously rendered block with new content."""
-        if not self._anchored:
-            # ESC 7  →  DEC Save Cursor: record exactly where the dashboard starts
-            sys.stdout.write("\0337")
-            self._anchored = True
-        else:
-            # ESC 8  →  DEC Restore Cursor: jump back to the saved position
-            # \033[J →  Erase from cursor to end of screen
-            sys.stdout.write("\0338\033[J")
-        sys.stdout.write("\n".join(lines) + "\n")
-        sys.stdout.flush()
-
-    # ------------------------------------------------------------------
-    def build(
-        self,
-        update_count:      int,
-        start_time:        float,
-        loop_ms:           float,
-        target_hz:         float,
-        actual_hz:         float,
-        captures:          list,
-        all_marker_positions: dict,
-        mobile_markers:    dict,
-        vpfs_sent:         bool,
-    ) -> list:
-        """Return a list of terminal lines representing the current state."""
-        W = 72  # dashboard width
-        now      = time.time()
-        uptime_s = int(now - start_time)
-        h, m, s  = uptime_s // 3600, (uptime_s % 3600) // 60, uptime_s % 60
-        ts       = time.strftime("%H:%M:%S")
-
-        REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
-
-        lines = []
-        B, R, G, Y, C = self._BOLD, self._RESET, self._GREEN, self._YELLOW, self._CYAN
-
-        lines.append(f"{B}{'─'*W}{R}")
-        lines.append(f"{B}  MULTI-CAMERA POSITIONING SYSTEM{R}  "
-                     f"{C}{ts}{R}  uptime {h:02d}:{m:02d}:{s:02d}  updates {update_count}")
-        lines.append(f"{B}{'─'*W}{R}")
-
-        # --- FPS / timing panel ---
-        fps_color = G if actual_hz >= target_hz * 0.85 else Y if actual_hz >= target_hz * 0.5 else self._RED
-        lines.append(f"  {B}Rate :{R} {fps_color}{actual_hz:5.2f} Hz{R}  "
-                     f"target {target_hz:.0f} Hz   "
-                     f"loop {loop_ms:5.1f} ms")
-
-        # --- Camera health panel ---
-        lines.append(f"  {B}Cams :{R}")
-        for c in captures:
-            last   = c._last_ok_ts
-            age    = f"{now - last:.1f}s" if last else "never"
-            errs   = c._frames_err
-            streak = c._consecutive_errors
-            if not c.is_alive:
-                status = f"{self._RED}DEAD{R}"
-            elif streak > 0:
-                status = f"{self._RED}ERR×{streak}{R}"
-            elif errs == 0:
-                status = f"{G}OK{R}"
-            else:
-                status = f"{Y}OK (errs={errs}){R}"
-            lines.append(
-                f"    {c._cam_info['name']:10s}  "
-                f"ok={c._frames_ok:<7d}  err={errs:<5d}  "
-                f"last_ok={age:>7s}  {status}")
-
-        lines.append(f"{B}{'─'*W}{R}")
-
-        # --- Markers panel ---
-        lines.append(f"  {B}Reference markers:{R}")
-        ref_ids = sorted([tid for tid in all_marker_positions if tid in REFERENCE_TAG_IDS])
-        if ref_ids:
-            for tid in ref_ids:
-                x, y, z, _ = all_marker_positions[tid]
-                lines.append(f"    #{tid:2d}  X={x*100:7.1f} cm   Y={y*100:7.1f} cm   "
-                             f"dist={np.sqrt(x**2+y**2)*100:6.1f} cm")
-        else:
-            lines.append(f"    {Y}(none visible — need at least one of 95-99){R}")
-
-        lines.append(f"  {B}Mobile markers:{R}")
-        if mobile_markers:
-            for tid in sorted(mobile_markers):
-                x, y, z, heading = mobile_markers[tid]
-                sent = f"  {G}↑ sent{R}" if vpfs_sent else ""
-                lines.append(
-                    f"    #{tid:2d}  X={x*100:7.1f} cm   Y={y*100:7.1f} cm   "
-                    f"hdg={np.degrees(heading):6.1f}°   "
-                    f"dist={np.sqrt(x**2+y**2)*100:6.1f} cm{sent}")
-        else:
-            lines.append(f"    {Y}(none detected){R}")
-
-        lines.append(f"{B}{'─'*W}{R}")
-        lines.append(f"  {self._WHITE}Ctrl+C to quit   warnings → stderr   full log → vps_debug.log{R}")
-
-        return lines
-
-
-# Pre-compute marker coordinate system (saves computation per frame)
-OBJ_POINTS = np.array([[-Defaults.TAG_SIZE/2,  Defaults.TAG_SIZE/2, 0],
-                       [Defaults.TAG_SIZE/2,   Defaults.TAG_SIZE/2, 0],
-                       [Defaults.TAG_SIZE/2,  -Defaults.TAG_SIZE/2, 0],
-                       [-Defaults.TAG_SIZE/2, -Defaults.TAG_SIZE/2, 0]], dtype=np.float32)
+log = setup_vps_logging()
 
 
 class CameraCapture:
@@ -1127,11 +891,26 @@ def main(argv=None):
                     f"consecutive_errors={c._consecutive_errors}")
             lines.append("=====================")
             log.info("\n".join(lines))
-            # Once all cameras are alive again after a PCI reset, clear the
-            # flag so the next HC-died event can trigger a fresh reset.
-            if CameraCapture._pci_reset_done and all(c.is_alive for c in captures_ref):
+            # Once all cameras are fully recovered (receiving fresh frames with no
+            # consecutive errors), clear the flag so the NEXT HC-died event can
+            # trigger a fresh reset.
+            #
+            # IMPORTANT: do NOT use c.is_alive alone — capture threads remain
+            # alive during _try_recover() (blocked waiting for re-enumeration).
+            # Clearing the flag while recovery is in progress causes subsequent
+            # cameras that acquire _recovery_lock to issue redundant PCI resets
+            # that interrupt re-enumeration in progress.
+            recovered = (
+                all(c.is_alive for c in captures_ref)
+                and all(c._consecutive_errors == 0 for c in captures_ref)
+                and all(
+                    c._last_ok_ts is not None and (now - c._last_ok_ts) < 10.0
+                    for c in captures_ref
+                )
+            )
+            if CameraCapture._pci_reset_done and recovered:
                 CameraCapture._pci_reset_done = False
-                log.info("All cameras alive — PCI reset flag cleared for next failure cycle.")
+                log.info("All cameras recovered — PCI reset flag cleared for next failure cycle.")
 
     _watchdog_thread = threading.Thread(
         target=_watchdog, args=(captures,),
@@ -1263,13 +1042,22 @@ def main(argv=None):
             vpfs_sent = True
 
         # Render in-place terminal dashboard (no scrolling)
+        camera_stats = [{
+            "name":               c._cam_info["name"],
+            "frames_ok":          c._frames_ok,
+            "frames_err":         c._frames_err,
+            "last_ok_ts":         c._last_ok_ts,
+            "is_alive":           c.is_alive,
+            "consecutive_errors": c._consecutive_errors,
+        } for c in captures]
         dashboard.render(dashboard.build(
             update_count=update_count,
             start_time=start_time,
             loop_ms=loop_ms,
             target_hz=update_frequency_hz,
             actual_hz=actual_hz,
-            captures=captures,
+            camera_stats=camera_stats,
+            title="MULTI-CAMERA POSITIONING SYSTEM",
             all_marker_positions=all_marker_positions,
             mobile_markers=mobile_markers,
             vpfs_sent=vpfs_sent,
