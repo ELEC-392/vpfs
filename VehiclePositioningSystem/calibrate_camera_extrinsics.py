@@ -19,7 +19,7 @@ At runtime:
     - Camera 1/2 detections are first transformed into Camera 0's frame using
       the stored T_camN_to_cam0 transforms.
     - Then the unified set of Camera-0-frame observations is used to establish
-      the world frame (marker 95 = origin, marker 96 defines +X axis).
+      the world frame (marker 95 = corner reference, marker 96 defines +X axis).
 
 Usage:
     python calibrate_camera_extrinsics.py

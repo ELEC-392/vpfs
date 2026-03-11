@@ -201,7 +201,7 @@ def main(argv=None, camera_id=0):
 
             # Print marker positions in the same format as the multicam script
             print(f"\n{'='*70}")
-            print(f"MARKER POSITIONS (relative to marker 95 at origin):")
+            print(f"MARKER POSITIONS (world coordinates from ref_tags.py):")
             print(f"{'='*70}")
 
             print("\n--- Reference Markers (Map Corners) ---")

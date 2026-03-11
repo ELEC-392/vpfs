@@ -38,18 +38,18 @@ def _addTag(tag: ReferenceTag):
 # Tags for lab setup
 # _addTag(ReferenceTag(584, 0.53, 0.715))
 
-# Reference tags (95-99) - Fixed markers with known world positions
-# These are used to compute camera poses. Once camera positions are known,
-# all other detected markers are transformed to world/map coordinates.
-# Positions are in meters (x, y).
+# Reference tags (95-99) - Fixed markers with known world positions.
+# Positions are in metres (x, y), measured from any convenient physical origin.
+#
+# Tag 95 marks one corner of the field; tag 96 lies along the +X direction
+# from tag 95 and defines the orientation of the X axis.  Tag 95 does NOT
+# need to be placed at (0, 0) — set all coordinates to the actual physical
+# measurements from your chosen origin.
+#
+# The more reference tags a camera sees, the more stable its pose estimate.
 
-# Origin corner
-_addTag(ReferenceTag(95, 0., 0.))    
-# Right edge   
-_addTag(ReferenceTag(96, 1.05, 0.)) 
-# Far right corner     
-_addTag(ReferenceTag(97, 1.05, 1.05))
-# Far left corner     
-_addTag(ReferenceTag(98, 0., 1.05))  
-# Center marker    
-_addTag(ReferenceTag(99, 0.5, 0.))    
+_addTag(ReferenceTag(95, 0., 0.))      # corner marker
+_addTag(ReferenceTag(96, 1.05, 0.))    # +X axis reference (1.05 m from tag 95)
+_addTag(ReferenceTag(97, 1.05, 1.05))  # far-right corner
+_addTag(ReferenceTag(98, 0., 1.05))    # far-left corner
+_addTag(ReferenceTag(99, 0.5, 0.))     # centre-line marker
