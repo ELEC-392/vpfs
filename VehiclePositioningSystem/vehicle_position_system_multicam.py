@@ -14,6 +14,7 @@ Usage:
     python vehicle_position_system_multicam.py                    # Normal mode
     python vehicle_position_system_multicam.py --no-display       # Headless (faster)
     python vehicle_position_system_multicam.py --hz 5             # 5 Hz update rate
+    python vehicle_position_system_multicam.py --cam-fps 5        # camera capture FPS (default 5)
     python vehicle_position_system_multicam.py --calib <path>     # Custom intrinsics
 
 Reference Markers (known world positions in ref_tags.py):
@@ -297,7 +298,8 @@ class CameraCapture:
                 else:
                     log.warning(f"[{name}] Device {device} still absent after 30 s wait")
 
-            new_cap = initialize_camera(cam_id, self._cam_info["K"], self._cam_info["D"])
+            new_cap = initialize_camera(cam_id, self._cam_info["K"], self._cam_info["D"],
+                                         fps=self._cam_info.get("fps", 5))
             if new_cap is not None and new_cap.isOpened():
                 self._cap = new_cap
                 self._cam_info["cap"] = new_cap
@@ -369,7 +371,7 @@ def reset_xhci_controller() -> bool:
     return reset_attempted
 
 
-def initialize_camera(camera_id, CAM_K, CAM_D):
+def initialize_camera(camera_id, CAM_K, CAM_D, fps: int = 5):
     """Initialize a single camera with proper settings."""
     camera_device = Defaults.CAMERA_SYMLINKS[camera_id]
     log.info(f"Initializing camera {camera_id} ({camera_device})...")
@@ -412,7 +414,7 @@ def initialize_camera(camera_id, CAM_K, CAM_D):
     # Cap FPS explicitly — three Brio 4K cameras at the default ~30fps MJPEG
     # can saturate a single USB 3.0 controller, causing isochronous transfer
     # errors that progressively corrupt the V4L2 state and require a reboot.
-    cam.set(cv2.CAP_PROP_FPS, 5)
+    cam.set(cv2.CAP_PROP_FPS, fps)
 
     # Camera control settings (applied via OpenCV as backup)
     cam.set(cv2.CAP_PROP_AUTOFOCUS, 0)      # Disable autofocus
@@ -766,18 +768,19 @@ def main(argv=None):
     
     Command-line Arguments:
     - --hz <frequency> : Update frequency in Hz (default: 10, recommended: 1-20)
-    - --no-display : Run in headless mode (no visual windows, faster performance)
+    - --display : Show visual windows (default: headless)
     - --calib <path> : Path to camera intrinsics calibration file
     """
     # Parse command-line flags
-    show_display = True
+    show_display = False
     update_frequency_hz = 5  # Default 5Hz update rate
-    
+    cam_fps = 5               # Default camera capture FPS
+
     if argv:
-        if '--no-display' in argv:
-            show_display = False
-            print("Running in headless mode (no visual display)")
-        
+        if '--display' in argv:
+            show_display = True
+            print("Running with visual display")
+
         # Parse update frequency
         if '--hz' in argv:
             idx = argv.index('--hz')
@@ -790,6 +793,17 @@ def main(argv=None):
                 except ValueError:
                     print(f"Warning: Invalid frequency value, using default 5Hz")
                     update_frequency_hz = 5
+
+        if '--cam-fps' in argv:
+            idx = argv.index('--cam-fps')
+            if idx + 1 < len(argv):
+                try:
+                    cam_fps = int(argv[idx + 1])
+                    if not (1 <= cam_fps <= 30):
+                        print(f"Warning: Invalid cam-fps {cam_fps}, using default 5")
+                        cam_fps = 5
+                except ValueError:
+                    cam_fps = 5
 
         # Connect to VPFS backend if --vpfs flag is provided
         # Usage: --vpfs                  (connects to http://localhost:5000)
@@ -830,14 +844,15 @@ def main(argv=None):
             (in_fx, in_fy, in_cx, in_cy), CAM_D = resolve_camera_intrinsics(argv=argv, camera_id=cam_id)
             CAM_K = np.array([[in_fx, 0, in_cx], [0, in_fy, in_cy], [0, 0, 1]], dtype=np.float64)
             
-            cam = initialize_camera(cam_id, CAM_K, CAM_D)
+            cam = initialize_camera(cam_id, CAM_K, CAM_D, fps=cam_fps)
             if cam is not None:
                 cameras.append({
                     "cap": cam,
                     "id": cam_id,
                     "name": cam_name,
                     "K": CAM_K,      # Store camera-specific intrinsics
-                    "D": CAM_D       # Store camera-specific distortion
+                    "D": CAM_D,      # Store camera-specific distortion
+                    "fps": cam_fps,  # Store FPS for use during recovery
                 })
         except Exception as e:
             print(f"Failed to initialize camera {cam_id}: {e}")

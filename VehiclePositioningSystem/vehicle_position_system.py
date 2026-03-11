@@ -18,6 +18,7 @@ Usage::
     python vehicle_position_system.py --display              # OpenCV window
     python vehicle_position_system.py --hz 10               # 10 Hz update rate
     python vehicle_position_system.py --cam 0               # camera index
+    python vehicle_position_system.py --cam-fps 5           # camera capture FPS (default 5)
     python vehicle_position_system.py --calib calib.json    # custom intrinsics
     python vehicle_position_system.py --vpfs                # publish to localhost
     python vehicle_position_system.py --vpfs http://host:5000
@@ -170,6 +171,16 @@ def main(argv: list[str] | None = None) -> None:
         except (IndexError, ValueError):
             pass
 
+    cam_fps = 5
+    if "--cam-fps" in argv:
+        idx = argv.index("--cam-fps")
+        try:
+            cam_fps = int(argv[idx + 1])
+            if not (1 <= cam_fps <= 30):
+                cam_fps = 5
+        except (IndexError, ValueError):
+            pass
+
     vpfs_url: str | None = None
     if "--vpfs" in argv:
         idx = argv.index("--vpfs")
@@ -180,7 +191,7 @@ def main(argv: list[str] | None = None) -> None:
     # ---------------------------------------------------------------- logging
     log = setup_vps_logging()
     log.info("=== SINGLE-CAMERA VPS STARTING ===")
-    log.info(f"  camera_id={camera_id}  hz={update_frequency_hz}"
+    log.info(f"  camera_id={camera_id}  hz={update_frequency_hz}  cam_fps={cam_fps}"
              f"  display={show_display}  vpfs={vpfs_url}")
 
     dump_dmesg_usb(label="startup")
@@ -209,7 +220,7 @@ def main(argv: list[str] | None = None) -> None:
                    if hasattr(aruco, "ArucoDetector") else None)
 
     # --------------------------------------------------------- camera init
-    cam = initialize_camera(camera_id)
+    cam = initialize_camera(camera_id, fps=cam_fps)
     if cam is None or not cam.isOpened():
         log.error("Failed to open camera — aborting")
         sys.exit(1)
@@ -333,9 +344,11 @@ def main(argv: list[str] | None = None) -> None:
                             f"ok={frames_ok} err={frames_err}")
 
         # --- terminal dashboard ------------------------------------------
-        update_count += 1
-        loop_ms       = (time.time() - loop_start) * 1000.0
-        actual_hz     = 1.0 / max(loop_ms / 1000.0, 1e-6)
+        update_count  += 1
+        current_time   = time.time()
+        loop_ms        = (current_time - loop_start) * 1000.0  # processing time excl. sleep
+        elapsed        = current_time - start_time
+        actual_hz      = update_count / elapsed if elapsed > 0 else 0.0
 
         cam_stats = [{
             "name":               f"cam{camera_id}",
@@ -360,9 +373,9 @@ def main(argv: list[str] | None = None) -> None:
         ))
 
         # --- frequency throttle ------------------------------------------
-        elapsed = time.time() - loop_start
-        if elapsed < target_period:
-            time.sleep(target_period - elapsed)
+        loop_elapsed = time.time() - loop_start
+        if loop_elapsed < target_period:
+            time.sleep(target_period - loop_elapsed)
 
     # ------------------------------------------------------------ cleanup
     log.info("Shutting down VPS")
