@@ -87,6 +87,33 @@ except:
 log = setup_vps_logging()
 
 
+def get_pci_address_for_device(device_path: str) -> str | None:
+    """
+    Return the PCI address of the xHCI controller that hosts this USB video
+    device (e.g. '0000:0d:00.3').
+
+    Uses udevadm to obtain the sysfs path then extracts the last PCI address
+    component that appears before the '/usb' segment — that is the xHCI root
+    hub's PCI device, not any upstream bridge.
+
+    Returns None if udevadm is unavailable or the path cannot be parsed.
+    """
+    try:
+        real = str(Path(device_path).resolve())
+        r = subprocess.run(
+            ["udevadm", "info", "--query=path", f"--name={real}"],
+            capture_output=True, text=True, timeout=5
+        )
+        if r.returncode != 0:
+            return None
+        # e.g. /devices/pci0000:00/0000:00:1d.0/0000:0d:00.3/usb4/4-4/4-4.1/...
+        before_usb = r.stdout.strip().split("/usb")[0]
+        addrs = re.findall(r'([0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f])', before_usb)
+        return addrs[-1] if addrs else None
+    except Exception:
+        return None
+
+
 class CameraCapture:
     """
     Continuous background capture thread for a single camera.
@@ -105,15 +132,16 @@ class CameraCapture:
     loop can run at any frequency without affecting camera stability.
     """
 
-    # Class-level lock: only one camera may attempt recovery at a time.
-    # When all 3 cameras fail simultaneously, this prevents concurrent USB
-    # resets that would overwhelm the xHCI controller.
-    _recovery_lock = threading.Lock()
+    # Per-controller recovery locks — keyed by PCI address (e.g. '0000:0d:00.3').
+    # Cameras whose controllers are independent can now recover in parallel;
+    # only cameras sharing a controller are serialised against each other.
+    _recovery_locks: dict[str, threading.Lock] = {}
+    _recovery_locks_meta = threading.Lock()   # guards the dict itself
 
-    # Ensures exactly one PCI reset occurs per HC-died event, regardless of
-    # how many cameras trigger recovery simultaneously.  Reset to False by
-    # the watchdog once all cameras are alive again.
-    _pci_reset_done = False
+    # Per-controller PCI-reset flag — True after a reset has been fired for
+    # that controller but before all its cameras have fully recovered.
+    # Keyed by PCI address; cleared by the watchdog per-controller.
+    _pci_reset_done: dict[str, bool] = {}
 
     # Trigger recovery if no good frame has been received for this many seconds.
     # With a blocking cap.read() that may stall 7-8 s per call, a count-based
@@ -122,6 +150,12 @@ class CameraCapture:
 
     def __init__(self, cam_info: dict):
         self._cam_info = cam_info
+        self._pci_addr: str = cam_info.get("pci_addr", "unknown")
+        # Ensure a lock and flag entry exist for this controller
+        with CameraCapture._recovery_locks_meta:
+            if self._pci_addr not in CameraCapture._recovery_locks:
+                CameraCapture._recovery_locks[self._pci_addr] = threading.Lock()
+                CameraCapture._pci_reset_done[self._pci_addr] = False
         self._cap: cv2.VideoCapture = cam_info["cap"]
         self._lock  = threading.Lock()
         self._frame = None          # most recent decoded frame
@@ -234,8 +268,7 @@ class CameraCapture:
                         log.error(f"[{name}] Recovery triggered: {reason} "
                                   f"(ok={self._frames_ok} err={self._frames_err})")
                         dump_dmesg_usb(label=f"{name} pre-recovery")
-                        with CameraCapture._recovery_lock:
-                            self._try_recover()
+                        self._try_recover()
                         self._consecutive_errors = 0
                         self._first_err_ts = None
 
@@ -256,15 +289,16 @@ class CameraCapture:
                         f"(ok={self._frames_ok} err={self._frames_err})")  
 
     def _try_recover(self):
-        name   = self._cam_info["name"]
-        cam_id = self._cam_info["id"]
-        device = Defaults.CAMERA_SYMLINKS[cam_id]
+        name    = self._cam_info["name"]
+        cam_id  = self._cam_info["id"]
+        device  = Defaults.CAMERA_SYMLINKS[cam_id]
+        pci     = self._pci_addr
+        ctrl_lock = CameraCapture._recovery_locks.get(pci, threading.Lock())
 
-        log.warning(f"[{name}] Starting recovery sequence...")
+        log.warning(f"[{name}] Starting recovery sequence (controller {pci})...")
         try:
             # Release the V4L2 file descriptor so the kernel can re-bind it
-            # after the controller comes back.  A single release() is enough;
-            # extra retries only add dead delay when the HC is gone.
+            # after the controller comes back.
             if self._cap is not None:
                 try:
                     self._cap.release()
@@ -274,19 +308,20 @@ class CameraCapture:
 
             # Check whether the device node still exists.  When the xHCI host
             # controller dies ("HC died; cleaning up" in dmesg) all /dev/brioN
-            # nodes disappear and every udevadm/USB-layer reset is useless.
-            # Only a PCI Function Level Reset (FLR) can bring the controller
-            # back.  Use _pci_reset_done to ensure only the FIRST camera that
-            # enters recovery triggers the reset; subsequent cameras skip it
-            # and simply wait for re-enumeration.
+            # nodes on that controller disappear.
+            # Only a PCI Function Level Reset (FLR) can bring the controller back.
+            # _pci_reset_done is keyed per-controller so cameras on independent
+            # controllers can each trigger their own reset without blocking each other.
             if not Path(device).exists():
-                if not CameraCapture._pci_reset_done:
-                    log.warning(f"[{name}] Device {device} gone — performing xHCI PCI reset")
-                    CameraCapture._pci_reset_done = True
-                    reset_xhci_controller()
-                else:
-                    log.warning(f"[{name}] Device {device} gone — "
-                                f"xHCI reset already done, waiting for re-enumeration")
+                with ctrl_lock:
+                    if not CameraCapture._pci_reset_done.get(pci, False):
+                        log.warning(f"[{name}] Device {device} gone — "
+                                    f"performing PCI reset for controller {pci}")
+                        CameraCapture._pci_reset_done[pci] = True
+                        reset_xhci_controller(pci_addr=pci)
+                    else:
+                        log.warning(f"[{name}] Device {device} gone — "
+                                    f"reset already done for {pci}, waiting for re-enumeration")
 
                 # Poll for the device node to reappear (up to 30 s).
                 # Re-enumeration after PCI FLR typically takes 10-15 s.
@@ -314,9 +349,9 @@ class CameraCapture:
             self._running = False
 
 
-def reset_xhci_controller() -> bool:
+def reset_xhci_controller(pci_addr: str | None = None) -> bool:
     """
-    Attempt a PCI Function Level Reset (FLR) on every xhci_hcd device.
+    Attempt a PCI Function Level Reset (FLR) on an xhci_hcd device.
 
     When the xHCI host controller dies (kernel logs "HC died; cleaning up"),
     the USB devices disappear from lsusb and udevadm/device-node resets are
@@ -324,13 +359,20 @@ def reset_xhci_controller() -> bool:
     FLR that restarts the controller and causes the kernel to re-enumerate
     all attached USB devices — without a full reboot.
 
+    Args:
+        pci_addr: PCI address to reset (e.g. '0000:0d:00.3').
+                  If None, resets ALL xhci_hcd devices (original behaviour,
+                  used when controllers are shared or pci_addr is unknown).
+
     Preferred path: /usr/local/bin/xhci-reset (installed by apply_usb_fix.sh)
     which can run as root via a sudoers NOPASSWD rule.
     Fallback: direct sysfs write (works if already running as root).
     """
-    # 1. Try the dedicated helper installed by apply_usb_fix.sh
+    # 1. Try the dedicated helper installed by apply_usb_fix.sh.
+    #    The helper resets all controllers; use it only when targeting all,
+    #    or when there is no better option (single-controller setups).
     helper = "/usr/local/bin/xhci-reset"
-    if Path(helper).exists():
+    if Path(helper).exists() and pci_addr is None:
         try:
             r = subprocess.run(
                 ["sudo", helper],
@@ -343,12 +385,17 @@ def reset_xhci_controller() -> bool:
         except Exception as exc:
             log.warning(f"  {helper} raised: {exc}")
 
-    # 2. Fallback: direct sysfs write (requires root)
+    # 2. Direct sysfs write — reset only the targeted controller (or all if
+    #    pci_addr is None).  Requires root or a udev/polkit rule granting write
+    #    access to the reset file.
     xhci_root = Path("/sys/bus/pci/drivers/xhci_hcd")
     reset_attempted = False
 
     if xhci_root.exists():
         for entry in xhci_root.iterdir():
+            # Skip controllers that don't match the requested PCI address
+            if pci_addr is not None and entry.name != pci_addr:
+                continue
             reset_file = entry / "reset"
             if not reset_file.exists():
                 try:
@@ -364,6 +411,19 @@ def reset_xhci_controller() -> bool:
                     log.warning(f"  PCI reset failed for {entry.name}: {exc}")
     else:
         log.warning("  /sys/bus/pci/drivers/xhci_hcd not found — cannot reset xHCI")
+
+    # 3. If targeted reset found nothing (e.g. sysfs entry has a different name
+    #    format), fall back to the helper as a last resort.
+    if not reset_attempted and pci_addr is not None and Path(helper).exists():
+        log.warning(f"  Targeted reset for {pci_addr} found no sysfs entry — "
+                    f"falling back to {helper} (resets all controllers)")
+        try:
+            r = subprocess.run(["sudo", helper], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                log.info(f"  xHCI PCI reset via {helper}:\n{r.stdout.strip()}")
+                return True
+        except Exception as exc:
+            log.warning(f"  {helper} raised: {exc}")
 
     if not reset_attempted:
         log.warning("  No xHCI PCI reset succeeded — run apply_usb_fix.sh to install "
@@ -846,13 +906,18 @@ def main(argv=None):
             
             cam = initialize_camera(cam_id, CAM_K, CAM_D, fps=cam_fps)
             if cam is not None:
+                device_path = Defaults.CAMERA_SYMLINKS[cam_id]
+                pci_addr = get_pci_address_for_device(device_path)
+                log.info(f"  cam{cam_id} ({device_path}) → PCI controller: "
+                         f"{pci_addr or 'unknown (check udevadm)'}")
                 cameras.append({
-                    "cap": cam,
-                    "id": cam_id,
-                    "name": cam_name,
-                    "K": CAM_K,      # Store camera-specific intrinsics
-                    "D": CAM_D,      # Store camera-specific distortion
-                    "fps": cam_fps,  # Store FPS for use during recovery
+                    "cap":      cam,
+                    "id":       cam_id,
+                    "name":     cam_name,
+                    "K":        CAM_K,
+                    "D":        CAM_D,
+                    "fps":      cam_fps,
+                    "pci_addr": pci_addr or "unknown",
                 })
         except Exception as e:
             print(f"Failed to initialize camera {cam_id}: {e}")
@@ -915,17 +980,28 @@ def main(argv=None):
             # Clearing the flag while recovery is in progress causes subsequent
             # cameras that acquire _recovery_lock to issue redundant PCI resets
             # that interrupt re-enumeration in progress.
-            recovered = (
-                all(c.is_alive for c in captures_ref)
-                and all(c._consecutive_errors == 0 for c in captures_ref)
-                and all(
-                    c._last_ok_ts is not None and (now - c._last_ok_ts) < 10.0
-                    for c in captures_ref
+            # Clear the per-controller reset flag once all cameras on that
+            # controller are fully recovered (fresh frames, no error streak).
+            # Group cameras by their PCI controller address.
+            by_pci: dict[str, list] = {}
+            for c in captures_ref:
+                by_pci.setdefault(c._pci_addr, []).append(c)
+
+            for pci, cams in by_pci.items():
+                if not CameraCapture._pci_reset_done.get(pci):
+                    continue
+                recovered = (
+                    all(c.is_alive for c in cams)
+                    and all(c._consecutive_errors == 0 for c in cams)
+                    and all(
+                        c._last_ok_ts is not None and (now - c._last_ok_ts) < 10.0
+                        for c in cams
+                    )
                 )
-            )
-            if CameraCapture._pci_reset_done and recovered:
-                CameraCapture._pci_reset_done = False
-                log.info("All cameras recovered — PCI reset flag cleared for next failure cycle.")
+                if recovered:
+                    CameraCapture._pci_reset_done[pci] = False
+                    log.info(f"All cameras on {pci} recovered — "
+                             f"PCI reset flag cleared for next failure cycle.")
 
     _watchdog_thread = threading.Thread(
         target=_watchdog, args=(captures,),
