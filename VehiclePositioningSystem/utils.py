@@ -656,17 +656,17 @@ class TerminalDashboard:
     _WHITE  = "\033[37m"
 
     def __init__(self):
-        self._anchored = False
+        self._line_count = 0
 
     def render(self, lines: list) -> None:
         """Overwrite the previously rendered block with new content."""
-        if not self._anchored:
-            sys.stdout.write("\0337")   # ESC 7 — DEC Save Cursor
-            self._anchored = True
-        else:
-            sys.stdout.write("\0338\033[J")  # ESC 8 — Restore; erase to end
+        if self._line_count > 0:
+            # Move cursor up by the number of previously written lines, then
+            # erase everything from the cursor to the end of the screen.
+            sys.stdout.write(f"\033[{self._line_count}A\033[J")
         sys.stdout.write("\n".join(lines) + "\n")
         sys.stdout.flush()
+        self._line_count = len(lines)
 
     def build(
         self,

@@ -1023,7 +1023,7 @@ def main(argv=None):
     # Temporal smoothing for marker positions (reduces jitter)
     # Using exponential moving average: smoothed = alpha * new + (1-alpha) * old
     smoothed_positions = {}  # tag_id -> (x, y, z)
-    SMOOTHING_ALPHA = 0.3  # 0.3 = more smoothing, 0.7+ = more responsive
+    SMOOTHING_ALPHA = 1.0  # 0.3 = more smoothing, 0.7+ = more responsive
 
     # Timing diagnostics
     last_timing_warning = 0

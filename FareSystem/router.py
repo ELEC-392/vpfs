@@ -549,9 +549,12 @@ def whereami_update(json):
     """
     Receives batched position updates over Socket.IO.
     Payload: list of {team, x, y, heading?} objects. Validated by JSON Schema.
+    Only accepts updates from localhost.
     """
-    # Log sending address (consider whitelisting in production)
-    print(f"Recv whereami update from {request.remote_addr}")
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        print(f"Rejected whereami update from {request.remote_addr} (not localhost)")
+        return
+    # print(f"Recv whereami update from {request.remote_addr}")
 
     try:
         validate(json, schema=whereami_update_schema)

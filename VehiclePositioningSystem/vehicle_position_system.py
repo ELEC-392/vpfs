@@ -68,7 +68,7 @@ from utils import (
 # ---------------------------------------------------------------------------
 
 REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
-SMOOTHING_ALPHA   = 0.4   # EMA weight for the current measurement (0=frozen, 1=raw)
+SMOOTHING_ALPHA   = 1.0   # EMA weight for the current measurement (0=frozen, 1=raw)
 
 
 # ---------------------------------------------------------------------------
