@@ -130,7 +130,8 @@ def drop_fare(idx: int):
     Drops a previously claimed fare, returning it to the pool.
     - Path: idx is the fare index.
     - Query: auth carries code/team depending on mode.
-    Only the team that claimed the fare may drop it, and only before pickup.
+    Only the team that claimed the fare may drop it. If the fare has already been
+    picked up, the fare's reputation value is deducted from the team's karma.
     """
     team = authenticate(request.args.get("auth", default=""), MODE)
     with fms.mutex:

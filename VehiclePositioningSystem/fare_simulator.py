@@ -175,9 +175,10 @@ def main() -> None:
     poll_every    = SIM_HZ          # poll API once per second
     step_count    = 0
 
-    current_fare:    dict | None = None
-    last_fare_id:    int  | None = None   # unique_id of the last known fare
-    has_active_fare: bool        = False
+    current_fare:       dict | None = None
+    last_fare_id:       int  | None = None   # unique_id of the last known fare
+    has_active_fare:    bool        = False
+    prev_fare_completed: bool       = False  # was the last fare completed (vs dropped)?
 
     print(f"Team {args.team} fare simulator running. Waiting for a fare to be claimed…")
 
@@ -193,7 +194,6 @@ def main() -> None:
                 fare_id = fare.get("unique_id") if fare else None
 
                 if fare_id != last_fare_id:
-                    last_fare_id = fare_id
                     if fare is not None:
                         sx = fare["src"]["x"]
                         sy = fare["src"]["y"]
@@ -206,19 +206,32 @@ def main() -> None:
                         src_label.set_visible(True)
                         dest_label.set_visible(True)
                         has_active_fare = True
+                        prev_fare_completed = False
                         print(f"New fare: pickup=({sx:.1f},{sy:.1f})  "
                               f"dropoff=({dx:.1f},{dy:.1f})")
                     else:
+                        # Fare disappeared – determine whether it was dropped or completed
+                        if last_fare_id is not None and not prev_fare_completed:
+                            print("[!] Fare was dropped. Stopping and waiting for a new fare…")
                         src_marker.set_data([], [])
                         dest_marker.set_data([], [])
                         src_label.set_visible(False)
                         dest_label.set_visible(False)
                         has_active_fare = False
+                    last_fare_id = fare_id
+
+                # Track completed state of the current fare for drop detection
+                if fare is not None:
+                    prev_fare_completed = fare.get("completed", False)
 
                 # Update status texts on every poll
                 if current_fare is None:
-                    fare_status_text.set_text("No active fare – waiting…")
-                    fare_status_text.set_color("gray")
+                    if last_fare_id is not None and not prev_fare_completed:
+                        fare_status_text.set_text("Fare dropped – waiting for new fare…")
+                        fare_status_text.set_color("orangered")
+                    else:
+                        fare_status_text.set_text("No active fare – waiting…")
+                        fare_status_text.set_color("gray")
                     in_position_text.set_visible(False)
                 else:
                     picked_up  = current_fare.get("pickedUp",  False)
