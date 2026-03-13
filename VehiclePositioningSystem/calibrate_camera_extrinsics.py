@@ -343,12 +343,12 @@ def main():
         t_std = np.std([T[:3, 3] for T in transforms], axis=0)
 
         print(f"  Camera {cam_id} origin in Camera 0 frame:")
-        print(f"    X = {t[0]*100:7.1f} cm   Y = {t[1]*100:7.1f} cm   Z = {t[2]*100:7.1f} cm")
-        print(f"    Distance between cameras: {dist*100:.1f} cm")
+        print(f"    X = {t[0]:7.1f} cm   Y = {t[1]:7.1f} cm   Z = {t[2]:7.1f} cm")
+        print(f"    Distance between cameras: {dist:.1f} cm")
         print(f"  Std dev (translation):")
-        print(f"    X = {t_std[0]*100:.2f} cm   Y = {t_std[1]*100:.2f} cm   Z = {t_std[2]*100:.2f} cm")
+        print(f"    X = {t_std[0]:.2f} cm   Y = {t_std[1]:.2f} cm   Z = {t_std[2]:.2f} cm")
 
-        max_std = np.max(t_std) * 100
+        max_std = np.max(t_std)
         if max_std < 0.5:
             print(f"  [PASS] Excellent calibration quality!")
         elif max_std < 2.0:
@@ -362,9 +362,9 @@ def main():
             "transform": T_avg.tolist(),   # T_{camN -> cam0}
             "samples_used": len(transforms),
             "std_dev_cm": {
-                "x": float(t_std[0] * 100),
-                "y": float(t_std[1] * 100),
-                "z": float(t_std[2] * 100),
+                "x": float(t_std[0]),
+                "y": float(t_std[1]),
+                "z": float(t_std[2]),
             }
         }
 
@@ -388,7 +388,7 @@ def main():
                 "World frame (origin=marker95, X-axis=marker96) is derived "
                 "at runtime from Camera 0's view of the reference markers."
             ),
-            "units": "meters",
+            "units": "centimeters",
         }
     }
     output.update(calibration_data)

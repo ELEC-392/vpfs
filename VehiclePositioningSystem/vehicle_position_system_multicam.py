@@ -750,7 +750,7 @@ def compute_world_positions(detections_by_camera):
         detections_by_camera: dict  camera_id -> list[ArucoDetection]
 
     Returns:
-        dict  tag_id -> (x_m, y_m, z_m)  in world coordinates (metres)
+        dict  tag_id -> (x_cm, y_cm, z_cm)  in world coordinates (centimetres)
     """
     all_observations = {}  # tag_id -> list of (x, y, z, heading)
 

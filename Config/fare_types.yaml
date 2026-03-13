@@ -1,13 +1,13 @@
 fare_types:
   STANDARD:
     base_fare: 10.0
-    distance_fare: 10.0
+    distance_fare: 0.1   # points/cm
     reputation: 5.0
     load_time_multiplier: 1.0
     target_ratio: 0.7
   SPECIAL:
     base_fare: 10.0
-    distance_fare: 5.0
+    distance_fare: 0.05  # points/cm
     reputation: 10.0
     load_time_multiplier: 1.0
     target_ratio: 0.3

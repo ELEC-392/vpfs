@@ -13,7 +13,7 @@ Conventions:
 - Detection provides:
   - det.tag_id: int ID of the tag.
   - det.pose_R: 3x3 rotation (camera-to-tag).
-  - det.pose_t: 3x1 translation (camera-to-tag), in meters.
+  - det.pose_t: 3x1 translation (camera-to-tag), in centimetres.
 """
 import os
 import sys
@@ -365,7 +365,7 @@ def compute_tag_poses(detections, cam_pos: ArrayLike) -> Dict[int, Tuple[int, in
         cam_pos: 4x4 map-to-camera transform (from compute_camera_pos).
 
     Returns:
-        Dict mapping tag_id -> (x, y, z) in map/world coordinates (meters).
+        Dict mapping tag_id -> (x, y, z) in map/world coordinates (centimetres).
     """
     tag_poses: Dict[int, Tuple[int, int, int]] = {}
 
