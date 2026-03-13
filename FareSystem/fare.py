@@ -76,18 +76,23 @@ class Fare:
     def drop_fare(self, idx: int, team: Team) -> str | None:
         """
         Drop a previously claimed fare, returning it to the pool.
-        Only allowed if the fare has not yet been picked up.
+        Teams may drop a fare at any time. If the fare has already been picked up
+        (i.e. it is in progress), the fare's full reputation value is deducted from
+        the team's karma as a penalty. No penalty is applied if the fare has not
+        yet been picked up.
         :param idx: Index of the fare
         :param team: Team attempting to drop the fare
         :return: Error message, None if successful
         """
         if self.team != team.number:
             return f"Fare {idx} is not claimed by team {team.number}"
+
         if self.pickedUp:
-            return f"Fare {idx} cannot be dropped after pickup"
+            team.karma -= self.compute_karma()
 
         self.team = None
         self.inPosition = False
+        self.pickedUp = False
         self._phaseTimeout = -1
         team.currentFare = None
         return None
@@ -104,6 +109,7 @@ class Fare:
         if team is not None:
             team.money += self.compute_fare()
             team.karma += self.compute_karma()
+            team.currentFare = None
             self.paid = True
 
     def to_json_dict(self, idx: int, extended: bool):
