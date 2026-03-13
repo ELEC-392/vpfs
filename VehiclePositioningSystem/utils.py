@@ -47,7 +47,7 @@ class Defaults:
         "/dev/brio-camera2",
         "/dev/brio-camera3"
     ]
-    TAG_SIZE = 10 / 100  # 10 cm in meters
+    TAG_SIZE = 10  # 10 cm  (all coordinates in this codebase are in centimetres)
 
 
 # Adapter to match utils.compute_camera_pos expected detection interface
@@ -213,13 +213,13 @@ def draw_aruco_overlays(img, corners, ids, CAM_K, CAM_D, TAG_SIZE, rvecs=None, t
             if world_positions is not None and tag_id is not None and tag_id in world_positions:
                 # World/map coordinates (relative to marker 95)
                 x, y, z, heading = world_positions[tag_id]
-                text = f"ID:{tag_id} X:{x*100:.1f}cm Y:{y*100:.1f}cm H:{np.degrees(heading):.0f}\u00b0"
+                text = f"ID:{tag_id} X:{x:.1f}cm Y:{y:.1f}cm H:{np.degrees(heading):.0f}\u00b0"
                 cv2.putText(img, text, (center_x - 100, center_y - 40), cv2.FONT_HERSHEY_PLAIN, 3, (0, 255, 0), 3, cv2.LINE_AA)
             elif rvecs is not None and tvecs is not None and i < len(tvecs):
                 # Camera coordinates (fallback)
                 tvec = tvecs[i]
                 dist = np.linalg.norm(tvec)
-                text = f"ID:{tag_id if tag_id else '?'} cam: {dist*100:.1f}cm"
+                text = f"ID:{tag_id if tag_id else '?'} cam: {dist:.1f}cm"
                 cv2.putText(img, text, (center_x - 100, center_y - 40), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 0), 3, cv2.LINE_AA)
     return img
 
@@ -740,8 +740,8 @@ class TerminalDashboard:
         if ref_ids:
             for tid in ref_ids:
                 x, y, z, _ = all_marker_positions[tid]
-                lines.append(f"    #{tid:2d}  X={x*100:7.1f} cm   Y={y*100:7.1f} cm   "
-                             f"dist={np.sqrt(x**2+y**2)*100:6.1f} cm")
+                lines.append(f"    #{tid:2d}  X={x:7.1f} cm   Y={y:7.1f} cm   "
+                             f"dist={np.sqrt(x**2+y**2):6.1f} cm")
         else:
             lines.append(f"    {Y}(none visible \u2014 need at least one of 95-99){R}")
 
@@ -751,9 +751,9 @@ class TerminalDashboard:
                 x, y, z, heading = mobile_markers[tid]
                 sent = f"  {G}\u2191 sent{R}" if vpfs_sent else ""
                 lines.append(
-                    f"    #{tid:2d}  X={x*100:7.1f} cm   Y={y*100:7.1f} cm   "
+                    f"    #{tid:2d}  X={x:7.1f} cm   Y={y:7.1f} cm   "
                     f"hdg={np.degrees(heading):6.1f}\u00b0   "
-                    f"dist={np.sqrt(x**2+y**2)*100:6.1f} cm{sent}")
+                    f"dist={np.sqrt(x**2+y**2):6.1f} cm{sent}")
         else:
             lines.append(f"    {Y}(none detected){R}")
 
