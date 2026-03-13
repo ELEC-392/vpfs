@@ -334,7 +334,7 @@ def claim_fare(idx: int):
     team = authenticate(request.args.get("auth", default=""), MODE)
     with fms.mutex:
         success = False
-        message = ""
+        message = f"Team {team} has successfully claimed fare {idx}"
         if team == -1:
             message = "Authentication failed"
         elif team in fms.teams.keys():
@@ -360,12 +360,13 @@ def drop_fare(idx: int):
     Drops a previously claimed fare, returning it to the pool.
     - Path: idx is the fare index.
     - Query: auth carries code/team depending on mode.
-    Only the team that claimed the fare may drop it, and only before pickup.
+    Only the team that claimed the fare may drop it. If the fare has already been
+    picked up, the fare's reputation value is deducted from the team's karma.
     """
     team = authenticate(request.args.get("auth", default=""), MODE)
     with fms.mutex:
         success = False
-        message = ""
+        message = f"Team {team} has successfully dropped fare {idx}"
         if team == -1:
             message = "Authentication failed"
         elif team in fms.teams.keys():
@@ -389,7 +390,16 @@ def drop_fare(idx: int):
 def current_fare(team: int):
     """
     Returns the currently assigned fare (with extended info) for a team number.
+    Requires authentication - teams can only query their own current fare.
+    Query params:
+      - auth: team code or team number depending on mode
     """
+    authenticated_team = authenticate(request.args.get("auth", default=""), MODE)
+    if authenticated_team == -1:
+        return jsonify({"fare": None, "message": "Authentication failed"}), 401
+    if authenticated_team != team:
+        return jsonify({"fare": None, "message": f"Access denied: Team {authenticated_team} cannot view Team {team}'s fare"}), 403
+
     with fms.mutex:
         fare_dict = None
         message = ""
@@ -406,6 +416,32 @@ def current_fare(team: int):
         return jsonify({
             "fare": fare_dict,
             "message": message
+        })
+
+@app.route("/teams/status/<int:team>")
+def team_status(team: int):
+    """
+    Returns the current status (money and reputation) for the authenticated team.
+    Query params:
+      - auth: team code or team number depending on mode
+    """
+    authenticated_team = authenticate(request.args.get("auth", default=""), MODE)
+    if authenticated_team == -1:
+        return jsonify({"status": None, "message": "Authentication failed"}), 401
+    if authenticated_team != team:
+        return jsonify({"status": None, "message": f"Access denied: Team {authenticated_team} cannot view Team {team}'s status"}), 403
+
+    with fms.mutex:
+        if team not in fms.teams:
+            return jsonify({"status": None, "message": f"Team {team} not in this match"}), 404
+        t = fms.teams[team]
+        return jsonify({
+            "status": {
+                "team": team,
+                "money": t.money,
+                "reputation": t.karma,
+            },
+            "message": ""
         })
 
 @app.route("/whereami/<int:team>")
