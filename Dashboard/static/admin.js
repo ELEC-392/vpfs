@@ -5,7 +5,7 @@
 class AdminPanel {
     constructor() {
         this.teamCount = 0;
-        this.teamNames = [];
+        this.knownTeams = [];  // [{number, name}] from teams.yaml
         this.duckColors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png"];
         this.activeTeams = {};
         
@@ -13,8 +13,8 @@ class AdminPanel {
     }
 
     async init() {
-        // Load team names from server
-        await this.loadTeamNames();
+        // Load known teams from teams.yaml via server
+        await this.loadKnownTeams();
         
         // Setup event listeners
         this.setupEventListeners();
@@ -26,27 +26,15 @@ class AdminPanel {
         await this.loadSystemInfo();
     }
 
-    async loadTeamNames() {
+    async loadKnownTeams() {
         try {
-            const response = await fetch('/api/admin/team-names');
+            const response = await fetch('/api/admin/known-teams');
             if (response.ok) {
-                this.teamNames = await response.json();
-                this.populateDatalist();
+                this.knownTeams = await response.json();
             }
         } catch (error) {
-            console.error('Error loading team names:', error);
+            console.error('Error loading known teams:', error);
         }
-    }
-
-    populateDatalist() {
-        const datalist = document.getElementById('team-names-datalist');
-        datalist.innerHTML = '';
-        
-        this.teamNames.forEach(name => {
-            const option = document.createElement('option');
-            option.value = name;
-            datalist.appendChild(option);
-        });
     }
 
     setupEventListeners() {
@@ -88,73 +76,66 @@ class AdminPanel {
         const grid = document.getElementById('teams-grid');
         grid.innerHTML = '';
 
+        // Build the option list once
+        const options = this.knownTeams
+            .map(t => `<option value="${t.number}">${t.name} (Kit #${t.number})</option>`)
+            .join('');
+
+        // Pre-fill slots with currently active teams in kit-number order
+        const activeList = Object.values(this.activeTeams)
+            .sort((a, b) => a.number - b.number);
+
         for (let i = 0; i < this.teamCount; i++) {
-            const teamNumber = (i + 1);  // Team numbers: 1, 2, 3, 4, 5, 6, 7
+            const slotNumber = i + 1;
             const duckColor = this.duckColors[i % this.duckColors.length];
-            
+
             const card = document.createElement('div');
             card.className = 'team-card';
             card.innerHTML = `
                 <div class="team-header">
                     <div class="duck-preview">
-                        <img src="/assets/ducks/${duckColor}" alt="Team ${teamNumber} Duck">
+                        <img src="/assets/ducks/${duckColor}" alt="Slot ${slotNumber} Duck">
                     </div>
                     <div class="team-info">
-                        <div class="team-label">Team Number</div>
-                        <div class="team-number">#${teamNumber}</div>
+                        <div class="team-label">Slot ${slotNumber}</div>
                     </div>
                 </div>
                 <div class="team-input-group">
-                    <label for="team-${teamNumber}-name">Team Name</label>
-                    <input 
-                        type="text" 
-                        id="team-${teamNumber}-name" 
-                        class="team-name-input"
-                        placeholder="Enter team name..."
-                        list="team-names-datalist"
-                        data-team-number="${teamNumber}"
-                    >
+                    <label for="team-slot-${slotNumber}">Select Team</label>
+                    <select id="team-slot-${slotNumber}" class="team-select" data-slot="${slotNumber}">
+                        <option value="">— choose a team —</option>
+                        ${options}
+                    </select>
                 </div>
             `;
 
             grid.appendChild(card);
 
-            // Add input event listener
-            const input = card.querySelector('.team-name-input');
-            input.addEventListener('input', (e) => {
-                if (e.target.value.trim()) {
-                    e.target.classList.add('filled');
-                } else {
-                    e.target.classList.remove('filled');
-                }
-            });
-
-            // Pre-fill if team already exists
-            if (this.activeTeams[teamNumber]) {
-                input.value = this.activeTeams[teamNumber].name;
-                input.classList.add('filled');
+            // Pre-fill from currently active teams
+            if (activeList[i]) {
+                card.querySelector('.team-select').value = activeList[i].number;
             }
         }
     }
 
     async saveConfiguration() {
         const teams = [];
-        const inputs = document.querySelectorAll('.team-name-input');
-        
-        inputs.forEach(input => {
-            const teamNumber = parseInt(input.dataset.teamNumber);
-            const teamName = input.value.trim();
-            
-            if (teamName) {
-                teams.push({
-                    number: teamNumber,
-                    name: teamName
-                });
-            }
+        const seen = new Set();
+
+        document.querySelectorAll('.team-select').forEach(select => {
+            if (!select.value) return;
+            const teamNumber = parseInt(select.value);
+            if (seen.has(teamNumber)) return;  // skip duplicate selections
+            seen.add(teamNumber);
+            const known = this.knownTeams.find(t => t.number === teamNumber);
+            teams.push({
+                number: teamNumber,
+                name: known ? known.name : `Team ${teamNumber}`
+            });
         });
 
         if (teams.length === 0) {
-            this.showStatus('Please enter at least one team name', 'error');
+            this.showStatus('Please select at least one team', 'error');
             return;
         }
 
@@ -172,6 +153,8 @@ class AdminPanel {
             if (response.ok) {
                 this.showStatus(`Successfully configured ${teams.length} team(s)!`, 'success');
                 await this.loadCurrentTeams();
+                // Reset selects to reflect active set
+                this.generateTeamCards();
             } else {
                 this.showStatus(result.message || 'Error saving configuration', 'error');
             }
@@ -197,10 +180,9 @@ class AdminPanel {
                 this.showStatus('All teams cleared successfully', 'success');
                 await this.loadCurrentTeams();
                 
-                // Clear input fields
-                document.querySelectorAll('.team-name-input').forEach(input => {
-                    input.value = '';
-                    input.classList.remove('filled');
+                // Clear select fields
+                document.querySelectorAll('.team-select').forEach(select => {
+                    select.value = '';
                 });
             } else {
                 this.showStatus(result.message || 'Error clearing teams', 'error');

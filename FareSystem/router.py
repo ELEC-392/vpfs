@@ -160,21 +160,6 @@ def serve_map_positions():
             }
     return jsonify(positions)
 
-@app.route("/api/admin/team-names")
-@require_admin
-def serve_team_names():
-    """
-    Returns available team names from YAML file for autocomplete.
-    """
-    try:
-        yaml_path = Path(__file__).parent.parent / 'Config' / 'team_names.yaml'
-        with open(yaml_path, 'r') as f:
-            data = yaml.safe_load(f)
-            return jsonify(data.get('teams', []))
-    except Exception as e:
-        print(f"Error loading team names: {e}")
-        return jsonify([])
-
 @app.route("/api/admin/known-teams")
 @require_admin
 def serve_known_teams():

@@ -193,7 +193,8 @@ nav {
     font-weight: 500;
 }
 
-.team-name-input {
+.team-name-input,
+.team-select {
     width: 100%;
     padding: 10px 12px;
     border: 2px solid #e5e7eb;
@@ -201,15 +202,19 @@ nav {
     font-size: 14px;
     transition: all 0.3s;
     font-family: inherit;
+    background: white;
+    cursor: pointer;
 }
 
-.team-name-input:focus {
+.team-name-input:focus,
+.team-select:focus {
     outline: none;
     border-color: #3b82f6;
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
-.team-name-input.filled {
+.team-name-input.filled,
+.team-select:not([value=""]):valid {
     border-color: #10b981;
     background: #f0fdf4;
 }
