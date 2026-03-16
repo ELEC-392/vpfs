@@ -11,7 +11,9 @@ import time
 from pathlib import Path
 import yaml
 
-from flask import Flask, jsonify, request, render_template, send_from_directory
+from functools import wraps
+
+from flask import Flask, jsonify, request, render_template, send_from_directory, session, redirect, url_for
 from flask_socketio import SocketIO, emit
 from jsonschema.exceptions import ValidationError
 
@@ -23,12 +25,30 @@ from auth import authenticate
 from params import MODE, OperatingMode
 from team import Team
 
+# Load admin credentials
+_admin_config_path = Path(__file__).resolve().parents[1] / "Config" / "admin.yaml"
+with open(_admin_config_path) as _f:
+    _admin_cfg = yaml.safe_load(_f)
+
 # Create Flask app and Socket.IO wrapper
 # Configure template and static folders for map monitor
 app = Flask(__name__,
             template_folder='../Dashboard/templates',
             static_folder='../Dashboard/static')
+app.secret_key = _admin_cfg["secret_key"]
 sock = SocketIO(app)
+
+def require_admin(f):
+    """Decorator that enforces admin session auth.
+    API routes get a 401 JSON response; page routes redirect to login."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("admin_authenticated"):
+            if request.path.startswith("/api/"):
+                return jsonify({"success": False, "message": "Unauthorized"}), 401
+            return redirect(url_for("serve_admin_login"))
+        return f(*args, **kwargs)
+    return decorated
 
 # Optionally initialize lab-specific modules
 app.app_context().push()
@@ -48,9 +68,32 @@ def serve_map_monitor():
     return render_template('dashboard.html')
 
 @app.route("/admin")
+@require_admin
 def serve_admin():
     """Serve the admin panel interface."""
     return render_template('admin.html')
+
+@app.route("/admin/login", methods=["GET"])
+def serve_admin_login():
+    """Serve the admin login page."""
+    if session.get("admin_authenticated"):
+        return redirect(url_for("serve_admin"))
+    return render_template('login.html', error=None)
+
+@app.route("/admin/login", methods=["POST"])
+def do_admin_login():
+    """Validate the submitted admin code and create a session."""
+    code = request.form.get("code", "")
+    if code == _admin_cfg["code"]:
+        session["admin_authenticated"] = True
+        return redirect(url_for("serve_admin"))
+    return render_template('login.html', error="Invalid code")
+
+@app.route("/admin/logout", methods=["POST"])
+def do_admin_logout():
+    """Clear the admin session."""
+    session.pop("admin_authenticated", None)
+    return redirect(url_for("serve_admin_login"))
 
 @app.route('/assets/<path:filename>')
 def serve_assets(filename):
@@ -82,29 +125,6 @@ def serve_status():
             "inMatch": team in fms.teams,
             "team": team,
         })
-
-@app.route("/dashboard/teams")
-def serve_teams():
-    """
-    Returns a list of teams with money, rep, current fare, and last update times.
-    Intended for dashboard/monitoring use.
-    """
-    data = []
-    with fms.mutex:
-        for team in fms.teams.values():
-            data.append({
-                "number": team.number,
-                "money": team.money,
-                "rep": team.karma,
-                "currentFare": team.currentFare,
-                "position": {
-                    "x": team.pos.x,
-                    "y": team.pos.y
-                },
-                "lastPosUpdate": team.lastPosUpdate,
-                "lastStatus": team.lastStatus
-            })
-    return jsonify(data)
 
 @app.route("/api/map/teams")
 def serve_map_teams():
@@ -141,6 +161,7 @@ def serve_map_positions():
     return jsonify(positions)
 
 @app.route("/api/admin/team-names")
+@require_admin
 def serve_team_names():
     """
     Returns available team names from YAML file for autocomplete.
@@ -154,7 +175,29 @@ def serve_team_names():
         print(f"Error loading team names: {e}")
         return jsonify([])
 
+@app.route("/api/admin/known-teams")
+@require_admin
+def serve_known_teams():
+    """
+    Returns all registered teams from teams.yaml as [{number, name}].
+    Used by the admin UI to populate the team picker for a round.
+    """
+    try:
+        yaml_path = Path(__file__).parent.parent / 'Config' / 'teams.yaml'
+        with open(yaml_path, 'r') as f:
+            data = yaml.safe_load(f)
+        teams_list = [
+            {"number": kit_id, "name": info["name"]}
+            for kit_id, info in data["teams"].items()
+        ]
+        teams_list.sort(key=lambda t: t["number"])
+        return jsonify(teams_list)
+    except Exception as e:
+        print(f"Error loading known teams: {e}")
+        return jsonify([])
+
 @app.route("/api/admin/current-teams")
+@require_admin
 def serve_current_teams():
     """
     Returns current teams with their names for admin panel.
@@ -171,13 +214,12 @@ def serve_current_teams():
     return jsonify(teams_data)
 
 @app.route("/api/admin/configure-teams", methods=["POST"])
+@require_admin
 def configure_teams():
     """
     Configure teams for the match.
     Expects JSON: {"teams": [{"number": int, "name": str}, ...]}
     """
-    if MODE != OperatingMode.LAB:
-        return jsonify({"success": False, "message": "Team configuration only allowed in LAB mode"}), 403
     
     try:
         data = request.get_json()
@@ -231,12 +273,11 @@ def configure_teams():
         return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route("/api/admin/clear-teams", methods=["POST"])
+@require_admin
 def clear_teams():
     """
     Clear all teams from the match.
     """
-    if MODE != OperatingMode.LAB:
-        return jsonify({"success": False, "message": "Team clearing only allowed in LAB mode"}), 403
     
     try:
         with fms.mutex:
@@ -254,12 +295,11 @@ def clear_teams():
         return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route("/api/admin/remove-team/<int:team_number>", methods=["DELETE"])
+@require_admin
 def remove_team(team_number):
     """
     Remove a specific team from the match.
     """
-    if MODE != OperatingMode.LAB:
-        return jsonify({"success": False, "message": "Team removal only allowed in LAB mode"}), 403
     
     try:
         with fms.mutex:
@@ -306,11 +346,6 @@ def serve_fares(extended: bool, include_expired: bool):
             if fare.isActive or include_expired:
                 data.append(fare.to_json_dict(idx, extended))
         return jsonify(data)
-
-@app.route("/dashboard/fares")
-def serve_fares_dashboard():
-    """Dashboard-oriented fare list (extended info, includes expired)."""
-    return serve_fares(True, True)
 
 @app.route("/fares")
 def serve_fares_normal():
@@ -564,10 +599,8 @@ def whereami_update(json):
             y = entry['y']
             heading = entry.get('heading', 0.0)
             with fms.mutex:
-                # Auto-register team on first position update
                 if team not in fms.teams:
-                    fms.teams[team] = Team(team)
-                    print(f"Auto-registered team {team}")
+                    continue
                 fms.teams[team].update_position(Point(x, y), heading)
             # Broadcast position update to map monitor clients
             sock.emit('position_update', {

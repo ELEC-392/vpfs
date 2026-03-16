@@ -8,6 +8,10 @@ __pycache__/
 # Others
 *.png
 
+# Credentials (contain auth secrets)
+Config/teams.yaml
+Config/admin.yaml
+
 # C extensions
 *.so
 

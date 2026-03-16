@@ -6,7 +6,7 @@ class OperatingMode(str, Enum):
     HOME = "Home"
     MATCH = "Match"
 
-MODE = OperatingMode.LAB
+MODE = OperatingMode.MATCH
 
 POSITION_TOLERANCE = 15
 PICKUP_DURATION = 5
