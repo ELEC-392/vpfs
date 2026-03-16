@@ -14,6 +14,10 @@ class MapMonitor {
         this.faresUpdateInterval = null;
         this.countdownInterval = null;
         
+        // Physical map dimensions in centimetres (tune as needed)
+        this.MAP_WIDTH_CM  = 605;
+        this.MAP_HEIGHT_CM = 490;
+
         // Fare type mapping (enum value to name)
         this.fareTypeMap = {
             0: 'STANDARD',
@@ -151,14 +155,11 @@ class MapMonitor {
         // Clear existing routes
         svgLayer.innerHTML = '';
         
-        // Set viewBox to 0-100 range (matching percentage coordinates)
-        svgLayer.setAttribute('viewBox', '0 0 100 100');
+        // Set viewBox to match physical map dimensions for direct cm coordinates
+        svgLayer.setAttribute('viewBox', `0 0 ${this.MAP_WIDTH_CM} ${this.MAP_HEIGHT_CM}`);
         svgLayer.setAttribute('preserveAspectRatio', 'none');
         
         console.log('Rendering fare routes, teamData:', this.teamData);
-        
-        // Map coordinate system is 500x500 pixels, need to normalize to 0-1 then to 0-100 for SVG
-        const MAP_SIZE = 500;
         
         // Iterate through teams to find their claimed fares
         for (const [teamNum, teamData] of Object.entries(this.teamData)) {
@@ -177,11 +178,11 @@ class MapMonitor {
             const team = this.teams.find(t => t.id === parseInt(teamNum));
             const teamColor = team ? (this.teamColors[team.duck] || '#6b7280') : '#6b7280';
             
-            // Normalize pixel coordinates (0-500) to 0-1, then scale to 0-100 for SVG viewBox
-            const srcX = (fare.src.x / MAP_SIZE) * 100;
-            const srcY = (fare.src.y / MAP_SIZE) * 100;
-            const destX = (fare.dest.x / MAP_SIZE) * 100;
-            const destY = (fare.dest.y / MAP_SIZE) * 100;
+            // Fare coordinates are in cm — use directly in the cm viewBox
+            const srcX  = fare.src.x;
+            const srcY  = fare.src.y;
+            const destX = fare.dest.x;
+            const destY = fare.dest.y;
             
             console.log(`Drawing route for team ${teamNum} with color ${teamColor} from (${srcX.toFixed(1)}, ${srcY.toFixed(1)}) to (${destX.toFixed(1)}, ${destY.toFixed(1)})`);
             
@@ -192,7 +193,7 @@ class MapMonitor {
             line.setAttribute('x2', destX);
             line.setAttribute('y2', destY);
             line.setAttribute('stroke', teamColor);
-            line.setAttribute('stroke-width', '0.5');
+            line.setAttribute('stroke-width', '3');
             line.setAttribute('stroke-opacity', '0.7');
             line.setAttribute('stroke-dasharray', '2,1');
             svgLayer.appendChild(line);
@@ -201,23 +202,23 @@ class MapMonitor {
             const startCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
             startCircle.setAttribute('cx', srcX);
             startCircle.setAttribute('cy', srcY);
-            startCircle.setAttribute('r', '1');
+            startCircle.setAttribute('r', '6');
             startCircle.setAttribute('fill', teamColor);
             startCircle.setAttribute('fill-opacity', '0.8');
             startCircle.setAttribute('stroke', 'white');
-            startCircle.setAttribute('stroke-width', '0.3');
+            startCircle.setAttribute('stroke-width', '2');
             svgLayer.appendChild(startCircle);
             
             // Create end point (dropoff)
             const endCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
             endCircle.setAttribute('cx', destX);
             endCircle.setAttribute('cy', destY);
-            endCircle.setAttribute('r', '1.2');
+            endCircle.setAttribute('r', '7');
             endCircle.setAttribute('fill', teamColor);
             endCircle.setAttribute('fill-opacity', '0.6');
             endCircle.setAttribute('stroke', 'white');
-            endCircle.setAttribute('stroke-width', '0.3');
-            endCircle.setAttribute('stroke-dasharray', '0.5,0.3');
+            endCircle.setAttribute('stroke-width', '2');
+            endCircle.setAttribute('stroke-dasharray', '3,2');
             svgLayer.appendChild(endCircle);
         }
     }
@@ -287,7 +288,7 @@ class MapMonitor {
                 <div class="legend-info">
                     <div class="legend-name">${team.name}</div>
                     <div class="legend-coords" id="coords-${team.id}">
-                        x: ${(pos.x * 100).toFixed(1)}% y: ${(pos.y * 100).toFixed(1)}%
+                        x: ${pos.x.toFixed(1)} cm &nbsp; y: ${pos.y.toFixed(1)} cm
                     </div>
                     <div class="legend-fare" id="fare-${team.id}"></div>
                 </div>
@@ -397,7 +398,7 @@ class MapMonitor {
                         <span class="fare-type ${isSpecial ? 'special' : ''}">${fareTypeName}</span>
                     </div>
                     <div class="fare-details">
-                        <span class="fare-distance">📏 ${distance.toFixed(2)} units</span>
+                        <span class="fare-distance">📏 ${distance.toFixed(0)} cm</span>
                         <span class="fare-timer" data-expiry="${fare.expiry}">⏱ ${this.formatTime(Math.max(0, timeLeft))}</span>
                     </div>
                 `;
@@ -477,17 +478,17 @@ class MapMonitor {
         });
     }
 
-    positionDuck(teamId, normalizedX, normalizedY, animate = true) {
+    positionDuck(teamId, x, y, animate = true) {
         const duckElement = this.duckElements[teamId];
         if (!duckElement) return;
 
-        // Convert normalized coordinates (0-1) to percentage
-        const xPercent = normalizedX * 100;
-        const yPercent = normalizedY * 100;
+        // Convert cm coordinates to percentage of map dimensions
+        const xPercent = (x / this.MAP_WIDTH_CM)  * 100;
+        const yPercent = (y / this.MAP_HEIGHT_CM) * 100;
 
         // Apply position with CSS transform
         duckElement.style.left = `${xPercent}%`;
-        duckElement.style.top = `${yPercent}%`;
+        duckElement.style.top  = `${yPercent}%`;
 
         // Add animation class if animating
         if (animate) {
@@ -515,7 +516,7 @@ class MapMonitor {
     updateLegendCoordinates(teamId, x, y) {
         const coordsElement = document.getElementById(`coords-${teamId}`);
         if (coordsElement) {
-            coordsElement.textContent = `x: ${(x * 100).toFixed(1)}% y: ${(y * 100).toFixed(1)}%`;
+            coordsElement.textContent = `x: ${x.toFixed(1)} cm   y: ${y.toFixed(1)} cm`;
         }
     }
 
