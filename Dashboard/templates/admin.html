@@ -11,8 +11,11 @@
         <header>
             <h1>⚙️ VPFS Admin Panel</h1>
             <nav>
-                <a href="/map" class="nav-link">📍 View Map</a>
+                <a href="/dashboard" class="nav-link" target="_blank" rel="noopener">📍 View Map</a>
                 <a href="/" class="nav-link">🏠 Home</a>
+                <form method="POST" action="/admin/logout" style="display:inline">
+                    <button type="submit" class="nav-link" style="border:none;cursor:pointer;">🔒 Logout</button>
+                </form>
             </nav>
         </header>
 
