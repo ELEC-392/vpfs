@@ -2,8 +2,8 @@ spawn_points:
   - id: 1
     name: "P1"
     coordinates:
-      x: 50.0
-      y: 50.0
+      x: 170.0
+      y: 19.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -12,8 +12,8 @@ spawn_points:
   - id: 2
     name: "P2"
     coordinates:
-      x: 100.0
-      y: 75.0
+      x: 260.0
+      y: 19.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -22,8 +22,8 @@ spawn_points:
   - id: 3
     name: "P3"
     coordinates:
-      x: 150.0
-      y: 100.0
+      x: 380.0
+      y: 19.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -32,8 +32,8 @@ spawn_points:
   - id: 4
     name: "P4"
     coordinates:
-      x: 200.0
-      y: 125.0
+      x: 515.0
+      y: 19.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -42,8 +42,8 @@ spawn_points:
   - id: 5
     name: "P5"
     coordinates:
-      x: 250.0
-      y: 150.0
+      x: 585.0
+      y: 90.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -52,8 +52,8 @@ spawn_points:
   - id: 6
     name: "P6"
     coordinates:
-      x: 300.0
-      y: 175.0
+      x: 380.0
+      y: 122.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -62,8 +62,8 @@ spawn_points:
   - id: 7
     name: "P7"
     coordinates:
-      x: 350.0
-      y: 200.0
+      x: 255.0
+      y: 122.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -72,8 +72,8 @@ spawn_points:
   - id: 8
     name: "P8"
     coordinates:
-      x: 400.0
-      y: 225.0
+      x: 170.0
+      y: 122.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -82,8 +82,8 @@ spawn_points:
   - id: 9
     name: "P9"
     coordinates:
-      x: 450.0
-      y: 250.0
+      x: 80.0
+      y: 122.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -92,8 +92,8 @@ spawn_points:
   - id: 10
     name: "P10"
     coordinates:
-      x: 500.0
-      y: 275.0
+      x: 28.0
+      y: 218.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -102,8 +102,8 @@ spawn_points:
   - id: 11
     name: "P11"
     coordinates:
-      x: 50.0
-      y: 300.0
+      x: 585.0
+      y: 178.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -112,8 +112,8 @@ spawn_points:
   - id: 12
     name: "P12"
     coordinates:
-      x: 100.0
-      y: 325.0
+      x: 510.0
+      y: 223.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -122,8 +122,8 @@ spawn_points:
   - id: 13
     name: "P13"
     coordinates:
-      x: 150.0
-      y: 350.0
+      x: 303.0
+      y: 175.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -132,8 +132,8 @@ spawn_points:
   - id: 14
     name: "P14"
     coordinates:
-      x: 200.0
-      y: 375.0
+      x: 184.0
+      y: 242.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -142,8 +142,8 @@ spawn_points:
   - id: 15
     name: "P15"
     coordinates:
-      x: 250.0
-      y: 400.0
+      x: 178.0
+      y: 317.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -152,8 +152,8 @@ spawn_points:
   - id: 16
     name: "P16"
     coordinates:
-      x: 300.0
-      y: 425.0
+      x: 135.0
+      y: 196.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -162,8 +162,8 @@ spawn_points:
   - id: 17
     name: "P17"
     coordinates:
-      x: 350.0
-      y: 450.0
+      x: 585.0
+      y: 325.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -172,8 +172,8 @@ spawn_points:
   - id: 18
     name: "P18"
     coordinates:
-      x: 400.0
-      y: 475.0
+      x: 510.0
+      y: 283.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -182,8 +182,8 @@ spawn_points:
   - id: 19
     name: "P19"
     coordinates:
-      x: 450.0
-      y: 500.0
+      x: 576.0
+      y: 455.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -192,8 +192,8 @@ spawn_points:
   - id: 20
     name: "P20"
     coordinates:
-      x: 500.0
-      y: 50.0
+      x: 525.0
+      y: 392.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -202,8 +202,8 @@ spawn_points:
   - id: 21
     name: "P21"
     coordinates:
-      x: 75.0
-      y: 150.0
+      x: 452.0
+      y: 360.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -212,8 +212,8 @@ spawn_points:
   - id: 22
     name: "P22"
     coordinates:
-      x: 125.0
-      y: 275.0
+      x: 435.0
+      y: 223.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
@@ -222,8 +222,8 @@ spawn_points:
   - id: 23
     name: "P23"
     coordinates:
-      x: 175.0
-      y: 425.0
+      x: 28.0
+      y: 400.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
