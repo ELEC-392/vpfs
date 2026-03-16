@@ -126,6 +126,29 @@ def serve_status():
             "team": team,
         })
 
+@app.route("/dashboard/teams")
+def serve_teams():
+    """
+    Returns a list of teams with money, rep, current fare, and last update times.
+    Intended for dashboard/monitoring use.
+    """
+    data = []
+    with fms.mutex:
+        for team in fms.teams.values():
+            data.append({
+                "number": team.number,
+                "money": team.money,
+                "rep": team.karma,
+                "currentFare": team.currentFare,
+                "position": {
+                    "x": team.pos.x,
+                    "y": team.pos.y
+                },
+                "lastPosUpdate": team.lastPosUpdate,
+                "lastStatus": team.lastStatus
+            })
+    return jsonify(data)
+
 @app.route("/api/map/teams")
 def serve_map_teams():
     """

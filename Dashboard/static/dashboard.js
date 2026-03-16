@@ -178,11 +178,11 @@ class MapMonitor {
             const team = this.teams.find(t => t.id === parseInt(teamNum));
             const teamColor = team ? (this.teamColors[team.duck] || '#6b7280') : '#6b7280';
             
-            // Fare coordinates are in cm — use directly in the cm viewBox
+            // Fare coordinates are in cm — use directly in the cm viewBox (Y flipped: origin = bottom-left)
             const srcX  = fare.src.x;
-            const srcY  = fare.src.y;
+            const srcY  = this.MAP_HEIGHT_CM - fare.src.y;
             const destX = fare.dest.x;
-            const destY = fare.dest.y;
+            const destY = this.MAP_HEIGHT_CM - fare.dest.y;
             
             console.log(`Drawing route for team ${teamNum} with color ${teamColor} from (${srcX.toFixed(1)}, ${srcY.toFixed(1)}) to (${destX.toFixed(1)}, ${destY.toFixed(1)})`);
             
@@ -482,9 +482,9 @@ class MapMonitor {
         const duckElement = this.duckElements[teamId];
         if (!duckElement) return;
 
-        // Convert cm coordinates to percentage of map dimensions
+        // Convert cm coordinates to percentage of map dimensions (Y flipped: origin = bottom-left)
         const xPercent = (x / this.MAP_WIDTH_CM)  * 100;
-        const yPercent = (y / this.MAP_HEIGHT_CM) * 100;
+        const yPercent = (1 - y / this.MAP_HEIGHT_CM) * 100;
 
         // Apply position with CSS transform
         duckElement.style.left = `${xPercent}%`;
