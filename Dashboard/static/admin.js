@@ -321,6 +321,8 @@ class AdminPanel {
     async configureMatch() {
         const matchNumber   = parseInt(document.getElementById('match-number').value);
         const durationMins  = parseFloat(document.getElementById('match-duration').value);
+        const seedInput     = document.getElementById('match-seed').value.trim();
+        const seed          = seedInput !== '' ? parseInt(seedInput) : null;
 
         if (!matchNumber || matchNumber < 1 || !durationMins || durationMins <= 0) {
             this.showMatchStatus('Please enter a valid match number and duration', 'error');
@@ -328,10 +330,12 @@ class AdminPanel {
         }
 
         try {
+            const body = { match_number: matchNumber, duration_minutes: durationMins };
+            if (seed !== null) body.seed = seed;
             const response = await fetch('/api/admin/match/configure', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ match_number: matchNumber, duration_minutes: durationMins })
+                body: JSON.stringify(body)
             });
             const result = await response.json();
             if (response.ok) {

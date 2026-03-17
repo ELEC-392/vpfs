@@ -120,6 +120,7 @@ def serve_status():
         return jsonify({
             "mode": MODE.value,
             "match": fms.matchNum,
+            "matchSeed": fms.matchSeed,
             "matchStart": fms.matchRunning,
             "matchPaused": fms.matchPaused,
             "timeRemain": fms.matchEndTime - time.time() if fms.matchRunning else fms.matchTimeRemain,
@@ -509,10 +510,12 @@ def admin_configure_match():
     """
     try:
         data = request.get_json()
-        match_number = int(data["match_number"])
+        match_number     = int(data["match_number"])
         duration_seconds = int(float(data["duration_minutes"]) * 60)
-        fms.config_match(match_number, duration_seconds)
-        return jsonify({"success": True, "message": f"Match {match_number} configured ({duration_seconds}s)"})
+        seed             = int(data["seed"]) if "seed" in data and data["seed"] != "" else None
+        fms.config_match(match_number, duration_seconds, seed)
+        used_seed = seed if seed is not None else match_number
+        return jsonify({"success": True, "message": f"Match {match_number} configured ({duration_seconds}s, seed={used_seed})"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 400
 
@@ -542,11 +545,12 @@ def admin_reset_match():
     """Stop the match and re-apply the same configuration, ready to start again."""
     try:
         with fms.mutex:
-            num = fms.matchNum
+            num      = fms.matchNum
             duration = fms.matchDuration
+            seed     = fms.matchSeed
         fms.cancel_match()
-        fms.config_match(num, duration)
-        return jsonify({"success": True, "message": f"Match {num} reset ({duration}s)"})
+        fms.config_match(num, duration, seed)
+        return jsonify({"success": True, "message": f"Match {num} reset ({duration}s, seed={seed})"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 400
 

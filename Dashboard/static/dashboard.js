@@ -468,10 +468,9 @@ class MapMonitor {
                     distance = 0;
                 }
                 
-                // Calculate time left - fare.expiry is in seconds (epoch time)
-                const now = Date.now() / 1000;
+                // Calculate time left - use frozen timestamp when match is paused/ended
+                const now = this._pausedAtNow || Date.now() / 1000;
                 const timeLeft = fare.expiry - now;
-                console.log(`Fare ${fare.id}: expiry=${fare.expiry}, now=${now}, timeLeft=${timeLeft}`);
                 
                 fareElement.innerHTML = `
                     <div class="fare-header">

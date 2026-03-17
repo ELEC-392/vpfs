@@ -29,6 +29,7 @@ from fare_types import FareType
 matchRunning = False          # True while an active match is in progress
 matchPaused  = False          # True when match has been paused (timer held)
 matchNum = 0                  # Current match number (configurable via config_match)
+matchSeed = 0                 # RNG seed for reproducible fare generation (configurable via config_match)
 matchDuration = 0             # Match duration in seconds (configurable via config_match)
 matchEndTime = 0              # UTC epoch timestamp when the current match ends (0 => not running)
 matchTimeRemain = 0           # Seconds remaining at the moment of pause
@@ -136,20 +137,22 @@ def periodic():
         time.sleep(0.02)
 
 
-def config_match(num: int, duration: int):
+def config_match(num: int, duration: int, seed: int | None = None):
     """
     Configure the next match.
-    Applies only if no match is currently running (matchEndTime < now).
+    Applies only if no match is currently running.
 
     Args:
         num: Match number to display.
         duration: Match duration in seconds.
+        seed: RNG seed for fare generation. Defaults to num if not provided.
     """
-    global matchNum, matchDuration, matchRunning, matchPaused, matchEndTime, matchTimeRemain
+    global matchNum, matchSeed, matchDuration, matchRunning, matchPaused, matchEndTime, matchTimeRemain
     with mutex:
         # Only apply when match is finished or paused (not actively running)
         if not matchRunning:
             matchNum        = num
+            matchSeed       = seed if seed is not None else num
             matchDuration   = duration
             matchEndTime    = 0
             matchRunning    = False
@@ -188,9 +191,9 @@ def start_match():
             print(f"Match {matchNum} resumed with {matchTimeRemain:.1f}s remaining (paused {pauseDuration:.1f}s)")
         else:
             # Fresh start
-            random.seed(matchNum)
+            random.seed(matchSeed)
             fareSequence = 0
-            print(f"Match {matchNum} started with seed={matchNum}")
+            print(f"Match {matchNum} started with seed={matchSeed}")
             matchEndTime    = time.time() + matchDuration
             matchTimeRemain = matchDuration
             matchRunning    = True
