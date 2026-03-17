@@ -6,7 +6,7 @@ class AdminPanel {
     constructor() {
         this.teamCount = 0;
         this.knownTeams = [];  // [{number, name}] from teams.yaml
-        this.duckColors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png"];
+        this.duckColors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png", "Violet.png", "Cyan.png"];
         this.activeTeams = {};
         
         this.init();
