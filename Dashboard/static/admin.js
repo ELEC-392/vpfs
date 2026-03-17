@@ -301,7 +301,11 @@ class AdminPanel {
                 const matchStatus = document.getElementById('current-match-status');
                 const timeRemain = document.getElementById('current-time-remain');
                 if (matchNum)  matchNum.textContent  = data.match;
-                if (matchStatus) matchStatus.textContent = data.matchStart ? '🟢 Running' : '⏸ Not started';
+                if (matchStatus) {
+                    if (data.matchStart)       matchStatus.textContent = '🟢 Running';
+                    else if (data.matchPaused) matchStatus.textContent = '⏸️ Paused';
+                    else                       matchStatus.textContent = '⏹️ Stopped';
+                }
                 if (timeRemain) {
                     const secs = Math.max(0, Math.round(data.timeRemain));
                     const m = Math.floor(secs / 60).toString().padStart(2, '0');

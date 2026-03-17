@@ -121,7 +121,8 @@ def serve_status():
             "mode": MODE.value,
             "match": fms.matchNum,
             "matchStart": fms.matchRunning,
-            "timeRemain": fms.matchEndTime - time.time(),
+            "matchPaused": fms.matchPaused,
+            "timeRemain": fms.matchEndTime - time.time() if fms.matchRunning else fms.matchTimeRemain,
             "inMatch": team in fms.teams,
             "team": team,
         })
@@ -522,10 +523,10 @@ def admin_start_match():
 @app.route("/api/admin/match/stop", methods=["POST"])
 @require_admin
 def admin_stop_match():
-    """Stop (cancel) the running match."""
+    """Pause the running match, holding the remaining time."""
     try:
-        fms.cancel_match()
-        return jsonify({"success": True, "message": "Match stopped"})
+        fms.pause_match()
+        return jsonify({"success": True, "message": "Match paused"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 400
 

@@ -27,9 +27,11 @@ from fare_types import FareType
 
 # Match state (protected by mutex)
 matchRunning = False          # True while an active match is in progress
+matchPaused  = False          # True when match has been paused (timer held)
 matchNum = 0                  # Current match number (configurable via config_match)
 matchDuration = 0             # Match duration in seconds (configurable via config_match)
 matchEndTime = 0              # UTC epoch timestamp when the current match ends (0 => not running)
+matchTimeRemain = 0           # Seconds remaining at the moment of pause
 
 # Active fare list (authoritative). Individual Fare objects manage their own flags.
 fares: list[Fare] = []
@@ -129,46 +131,69 @@ def config_match(num: int, duration: int):
         num: Match number to display.
         duration: Match duration in seconds.
     """
-    global matchNum, matchDuration, matchRunning, matchEndTime
+    global matchNum, matchDuration, matchRunning, matchPaused, matchEndTime, matchTimeRemain
     with mutex:
-        # Only apply when match is finished
-        if matchEndTime < time.time():
-            matchNum = num
-            matchDuration = duration
-            matchEndTime = 0
-            matchRunning = False
+        # Only apply when match is finished or paused (not actively running)
+        if not matchRunning:
+            matchNum        = num
+            matchDuration   = duration
+            matchEndTime    = 0
+            matchRunning    = False
+            matchPaused     = False
+            matchTimeRemain = 0
 
 
 def start_match():
     """
-    Start the configured match.
-    Sets matchEndTime = now + matchDuration and marks matchRunning True.
-    Seeds the random number generator with matchNum to ensure reproducible fares.
-    Resets fare sequence counter for unique ID generation.
+    Start or resume the match.
+    - First start: seeds RNG, resets fare counter, starts from matchDuration.
+    - Resume after pause: continues from matchTimeRemain.
     No-op if already running.
     """
-    global matchEndTime, matchRunning, fareSequence
+    global matchEndTime, matchRunning, matchPaused, matchTimeRemain, fareSequence
     with mutex:
-        if not matchRunning:
-            # Seed random generator with match number for reproducible fare generation
-            # All teams playing the same match number will get identical fares
-            random.seed(matchNum)
-            
-            # Reset fare sequence counter for this match
-            fareSequence = 0
-            
-            print(f"Match {matchNum} started with seed={matchNum}")
-            
-            matchEndTime = time.time() + matchDuration
+        if matchRunning:
+            return
+        if matchPaused and matchTimeRemain > 0:
+            # Resume from where we left off
+            matchEndTime = time.time() + matchTimeRemain
             matchRunning = True
+            matchPaused  = False
+            print(f"Match {matchNum} resumed with {matchTimeRemain:.1f}s remaining")
+        else:
+            # Fresh start
+            random.seed(matchNum)
+            fareSequence = 0
+            print(f"Match {matchNum} started with seed={matchNum}")
+            matchEndTime    = time.time() + matchDuration
+            matchTimeRemain = matchDuration
+            matchRunning    = True
+            matchPaused     = False
+
+
+def pause_match():
+    """
+    Pause the running match, preserving remaining time.
+    No-op if not running.
+    """
+    global matchEndTime, matchRunning, matchPaused, matchTimeRemain
+    with mutex:
+        if matchRunning:
+            matchTimeRemain = max(0, matchEndTime - time.time())
+            matchEndTime    = 0
+            matchRunning    = False
+            matchPaused     = True
+            print(f"Match {matchNum} paused with {matchTimeRemain:.1f}s remaining")
 
 
 def cancel_match():
     """
-    Cancel an in-progress match immediately by clearing matchEndTime.
-    Leaves matchRunning True/False unchanged by design.
+    Stop and reset the match, discarding remaining time.
+    Used by the Reset button.
     """
-    global matchEndTime
+    global matchEndTime, matchRunning, matchPaused, matchTimeRemain
     with mutex:
-        if matchRunning:
-            matchEndTime = 0
+        matchEndTime    = 0
+        matchRunning    = False
+        matchPaused     = False
+        matchTimeRemain = 0
