@@ -100,6 +100,7 @@ def periodic():
     Main periodic loop.
     - Advances all fares (pickup/dropoff/payment handling).
     - Spawns new fares when allowed by do_generation().
+    - Auto-pauses the match when matchEndTime is reached.
     Runs forever; intended to execute on a dedicated background thread.
     Only processes fares while the match is actively running.
     """
@@ -107,19 +108,29 @@ def periodic():
     while True:
         with mutex:
             if matchRunning:
-                # Update fare statuses
-                for idx, fare in enumerate(fares):
-                    fare.periodic(idx, teams)
+                # Auto-pause when match time is up
+                if matchEndTime > 0 and time.time() >= matchEndTime:
+                    print(f"Match {matchNum} time expired — stopping fare system")
+                    # Release the lock so pause_match() can acquire it
+                    pass  # handled below
+                else:
+                    # Update fare statuses
+                    for idx, fare in enumerate(fares):
+                        fare.periodic(idx, teams)
 
-                # Generate a new fare if needed
-                if do_generation():
-                    fare = generate_fare(fares, matchNum, fareSequence)
-                    if fare is not None:
-                        fares.append(fare)
-                        fareSequence += 1
-                        print(f"New Fare (ID: {fare.unique_id})")
-                    else:
-                        print("Failed faregen")
+                    # Generate a new fare if needed
+                    if do_generation():
+                        fare = generate_fare(fares, matchNum, fareSequence)
+                        if fare is not None:
+                            fares.append(fare)
+                            fareSequence += 1
+                            print(f"New Fare (ID: {fare.unique_id})")
+                        else:
+                            print("Failed faregen")
+
+        # Auto-pause outside the lock to avoid deadlock
+        if matchRunning and matchEndTime > 0 and time.time() >= matchEndTime:
+            pause_match()
 
         # 20 ms sleep ~ 50 Hz update rate
         time.sleep(0.02)

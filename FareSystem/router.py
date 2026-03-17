@@ -380,6 +380,7 @@ def claim_fare(idx: int):
     Claims a fare for the authenticated team.
     - Path: idx is the fare index.
     - Query: auth carries code/team depending on mode.
+    Only allowed while the match is running.
     """
     team = authenticate(request.args.get("auth", default=""), MODE)
     with fms.mutex:
@@ -387,6 +388,8 @@ def claim_fare(idx: int):
         message = f"Team {team} has successfully claimed fare {idx}"
         if team == -1:
             message = "Authentication failed"
+        elif not fms.matchRunning:
+            message = "Match is not running"
         elif team in fms.teams.keys():
             if idx < len(fms.fares):
                 err = fms.fares[idx].claim_fare(idx, fms.teams[team])
@@ -412,6 +415,7 @@ def drop_fare(idx: int):
     - Query: auth carries code/team depending on mode.
     Only the team that claimed the fare may drop it. If the fare has already been
     picked up, the fare's reputation value is deducted from the team's karma.
+    Only allowed while the match is running.
     """
     team = authenticate(request.args.get("auth", default=""), MODE)
     with fms.mutex:
@@ -419,6 +423,8 @@ def drop_fare(idx: int):
         message = f"Team {team} has successfully dropped fare {idx}"
         if team == -1:
             message = "Authentication failed"
+        elif not fms.matchRunning:
+            message = "Match is not running"
         elif team in fms.teams.keys():
             if idx < len(fms.fares):
                 err = fms.fares[idx].drop_fare(idx, fms.teams[team])
