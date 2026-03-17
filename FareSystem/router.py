@@ -157,8 +157,8 @@ def serve_map_teams():
     Returns team configuration for map monitor.
     Maps team numbers to duck colors.
     """
-    # Duck color mapping (7 teams max)
-    duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png"]
+    # Duck color mapping (9 teams max)
+    duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png", "Violet.png", "Cyan.png"]
     
     teams_data = []
     with fms.mutex:
@@ -258,7 +258,7 @@ def configure_teams():
                 fms.teams[team_number] = team
         
         # Broadcast update to map monitor clients
-        duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png"]
+        duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png", "Violet.png", "Cyan.png"]
         with fms.mutex:
             teams_data = []
             positions = {}
@@ -325,7 +325,7 @@ def remove_team(team_number):
             del fms.teams[team_number]
         
         # Broadcast update to map monitor
-        duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png"]
+        duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png", "Violet.png", "Cyan.png"]
         with fms.mutex:
             teams_data = []
             positions = {}
@@ -611,7 +611,7 @@ def sock_connect(auth):
     print("Connected")
     
     # Send initial state to map monitor clients
-    duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png"]
+    duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png", "Violet.png", "Cyan.png"]
     
     # Gather data under mutex, then emit outside
     with fms.mutex:

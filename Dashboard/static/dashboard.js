@@ -36,7 +36,9 @@ class MapMonitor {
             'Yellow.png': '#f59e0b',
             'Purple.png': '#8b5cf6',
             'Brown.png': '#92400e',
-            'Grey.png': '#6b7280'
+            'Grey.png': '#6b7280',
+            'Violet.png': '#7c3aed',
+            'Cyan.png': '#06b6d4'
         };
         
         this.init();
