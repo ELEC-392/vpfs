@@ -146,6 +146,12 @@ class MapMonitor {
                 this.matchPaused   = data.matchPaused;
                 this.matchEndTime  = data.matchStart ? (Date.now() / 1000 + data.timeRemain) : 0;
                 this.matchPausedRemain = (!data.matchStart && data.timeRemain > 0) ? data.timeRemain : 0;
+                // Record the wall-clock time when the pause was first detected so timers freeze
+                if (data.matchPaused && !this._pausedAtNow) {
+                    this._pausedAtNow = Date.now() / 1000;
+                } else if (!data.matchPaused) {
+                    this._pausedAtNow = null;
+                }
                 // Track total match duration for the progress bar
                 if (data.matchStart && data.timeRemain > 0) {
                     this._matchTotalSecs = this._matchTotalSecs || data.timeRemain;
@@ -382,7 +388,7 @@ class MapMonitor {
                 if (teamData && teamData.currentFare !== null && teamData.currentFare !== undefined) {
                     const fare = this.fares[teamData.currentFare];
                     if (fare) {
-                        fareElement.textContent = `Active Fare: #${fare.unique_id || fare.id}`;
+                        fareElement.textContent = `Active Fare: #${fare.id}`;
                         fareElement.style.display = 'block';
                     } else {
                         fareElement.textContent = `Active Fare: #${teamData.currentFare}`;
@@ -462,7 +468,7 @@ class MapMonitor {
                 
                 fareElement.innerHTML = `
                     <div class="fare-header">
-                        <span class="fare-id">Fare #${fare.unique_id || fare.id}${isClaimed ? ' 🔒' : ''}</span>
+                        <span class="fare-id">Fare #${fare.id}${isClaimed ? ' 🔒' : ''}</span>
                         <span class="fare-type ${isSpecial ? 'special' : ''}">${fareTypeName}</span>
                     </div>
                     <div class="fare-details">
@@ -497,7 +503,8 @@ class MapMonitor {
     }
     
     updateFareCountdowns() {
-        const now = Date.now() / 1000;
+        // Use the frozen timestamp when paused so fare timers don't advance
+        const now = this._pausedAtNow || Date.now() / 1000;
         document.querySelectorAll('.fare-timer').forEach(timer => {
             const expiry = parseFloat(timer.dataset.expiry);
             const timeLeft = Math.max(0, expiry - now);
