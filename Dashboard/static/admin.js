@@ -68,6 +68,16 @@ class AdminPanel {
         document.getElementById('start-match-btn').addEventListener('click', () => {
             this.startMatch();
         });
+
+        // Stop match button
+        document.getElementById('stop-match-btn').addEventListener('click', () => {
+            this.stopMatch();
+        });
+
+        // Reset match button
+        document.getElementById('reset-match-btn').addEventListener('click', () => {
+            this.resetMatch();
+        });
     }
 
     setTeamCount(count) {
@@ -342,6 +352,30 @@ class AdminPanel {
             } else {
                 this.showMatchStatus(result.message || 'Error starting match', 'error');
             }
+        } catch (error) {
+            this.showMatchStatus('Network error', 'error');
+        }
+    }
+
+    async stopMatch() {
+        if (!confirm('Stop the match now?')) return;
+        try {
+            const response = await fetch('/api/admin/match/stop', { method: 'POST' });
+            const result = await response.json();
+            this.showMatchStatus(result.message, response.ok ? 'success' : 'error');
+            await this.loadSystemInfo();
+        } catch (error) {
+            this.showMatchStatus('Network error', 'error');
+        }
+    }
+
+    async resetMatch() {
+        if (!confirm('Reset the match timer? This will stop the current match and restore the same configuration.')) return;
+        try {
+            const response = await fetch('/api/admin/match/reset', { method: 'POST' });
+            const result = await response.json();
+            this.showMatchStatus(result.message, response.ok ? 'success' : 'error');
+            await this.loadSystemInfo();
         } catch (error) {
             this.showMatchStatus('Network error', 'error');
         }

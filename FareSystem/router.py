@@ -519,6 +519,30 @@ def admin_start_match():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 400
 
+@app.route("/api/admin/match/stop", methods=["POST"])
+@require_admin
+def admin_stop_match():
+    """Stop (cancel) the running match."""
+    try:
+        fms.cancel_match()
+        return jsonify({"success": True, "message": "Match stopped"})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 400
+
+@app.route("/api/admin/match/reset", methods=["POST"])
+@require_admin
+def admin_reset_match():
+    """Stop the match and re-apply the same configuration, ready to start again."""
+    try:
+        with fms.mutex:
+            num = fms.matchNum
+            duration = fms.matchDuration
+        fms.cancel_match()
+        fms.config_match(num, duration)
+        return jsonify({"success": True, "message": f"Match {num} reset ({duration}s)"})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 400
+
 @app.route("/whereami/<int:team>")
 def whereami_get(team: int):
     """
