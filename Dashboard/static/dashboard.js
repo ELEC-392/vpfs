@@ -143,14 +143,14 @@ class MapMonitor {
             if (response.ok) {
                 const data = await response.json();
                 this.matchRunning  = data.matchStart;
+                this.matchPaused   = data.matchPaused;
                 this.matchEndTime  = data.matchStart ? (Date.now() / 1000 + data.timeRemain) : 0;
-                this.matchDuration = this.matchDuration || 1; // keep last known duration
-                if (data.timeRemain > 0) this.matchDuration = data.timeRemain + (this.matchDuration - this.matchDuration); // update on first call
-                // Recalculate duration when match is running using timeRemain + elapsed
+                this.matchPausedRemain = (!data.matchStart && data.timeRemain > 0) ? data.timeRemain : 0;
+                // Track total match duration for the progress bar
                 if (data.matchStart && data.timeRemain > 0) {
                     this._matchTotalSecs = this._matchTotalSecs || data.timeRemain;
                 }
-                if (!data.matchStart) this._matchTotalSecs = null;
+                if (!data.matchStart && !data.matchPaused) this._matchTotalSecs = null;
                 this.updateMatchCountdown();
             }
         } catch (e) {
@@ -164,10 +164,23 @@ class MapMonitor {
         if (!timeEl || !barEl) return;
 
         if (!this.matchRunning || !this.matchEndTime) {
-            timeEl.textContent = '--:--';
-            timeEl.className   = 'countdown-time';
-            barEl.style.width  = '100%';
-            barEl.className    = 'countdown-bar';
+            // Paused: show frozen remaining time
+            if (this.matchPaused && this.matchPausedRemain > 0) {
+                const secsLeft = this.matchPausedRemain;
+                const total    = this._matchTotalSecs || secsLeft || 1;
+                const pct      = (secsLeft / total) * 100;
+                const m = Math.floor(secsLeft / 60).toString().padStart(2, '0');
+                const s = Math.floor(secsLeft % 60).toString().padStart(2, '0');
+                timeEl.textContent = `${m}:${s}`;
+                timeEl.className   = 'countdown-time';
+                barEl.style.width  = `${pct}%`;
+                barEl.className    = 'countdown-bar';
+            } else {
+                timeEl.textContent = '--:--';
+                timeEl.className   = 'countdown-time';
+                barEl.style.width  = '100%';
+                barEl.className    = 'countdown-bar';
+            }
             return;
         }
 

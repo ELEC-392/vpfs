@@ -32,6 +32,7 @@ matchNum = 0                  # Current match number (configurable via config_ma
 matchDuration = 0             # Match duration in seconds (configurable via config_match)
 matchEndTime = 0              # UTC epoch timestamp when the current match ends (0 => not running)
 matchTimeRemain = 0           # Seconds remaining at the moment of pause
+_pauseStart = 0               # epoch when pause_match() was called (used to shift fare timestamps)
 
 # Active fare list (authoritative). Individual Fare objects manage their own flags.
 fares: list[Fare] = []
@@ -100,23 +101,25 @@ def periodic():
     - Advances all fares (pickup/dropoff/payment handling).
     - Spawns new fares when allowed by do_generation().
     Runs forever; intended to execute on a dedicated background thread.
+    Only processes fares while the match is actively running.
     """
     global fares, fareSequence
     while True:
         with mutex:
-            # Update fare statuses
-            for idx, fare in enumerate(fares):
-                fare.periodic(idx, teams)
+            if matchRunning:
+                # Update fare statuses
+                for idx, fare in enumerate(fares):
+                    fare.periodic(idx, teams)
 
-            # Generate a new fare if needed
-            if do_generation():
-                fare = generate_fare(fares, matchNum, fareSequence)
-                if fare is not None:
-                    fares.append(fare)
-                    fareSequence += 1
-                    print(f"New Fare (ID: {fare.unique_id})")
-                else:
-                    print("Failed faregen")
+                # Generate a new fare if needed
+                if do_generation():
+                    fare = generate_fare(fares, matchNum, fareSequence)
+                    if fare is not None:
+                        fares.append(fare)
+                        fareSequence += 1
+                        print(f"New Fare (ID: {fare.unique_id})")
+                    else:
+                        print("Failed faregen")
 
         # 20 ms sleep ~ 50 Hz update rate
         time.sleep(0.02)
@@ -143,23 +146,35 @@ def config_match(num: int, duration: int):
             matchTimeRemain = 0
 
 
+def _shift_fare_timestamps(secs: float):
+    """Shift all fare timeout fields forward by `secs` to compensate for a pause.
+    Must be called with mutex held."""
+    for fare in fares:
+        fare.expiry += secs
+        if fare._phaseTimeout != -1:
+            fare._phaseTimeout += secs
+
+
 def start_match():
     """
     Start or resume the match.
     - First start: seeds RNG, resets fare counter, starts from matchDuration.
-    - Resume after pause: continues from matchTimeRemain.
+    - Resume after pause: continues from matchTimeRemain, shifting fare timestamps
+      so fares don't age during the pause.
     No-op if already running.
     """
-    global matchEndTime, matchRunning, matchPaused, matchTimeRemain, fareSequence
+    global matchEndTime, matchRunning, matchPaused, matchTimeRemain, fareSequence, _pauseStart
     with mutex:
         if matchRunning:
             return
         if matchPaused and matchTimeRemain > 0:
-            # Resume from where we left off
+            # Shift fare timestamps forward by the duration of the pause
+            pauseDuration = time.time() - _pauseStart
+            _shift_fare_timestamps(pauseDuration)
             matchEndTime = time.time() + matchTimeRemain
             matchRunning = True
             matchPaused  = False
-            print(f"Match {matchNum} resumed with {matchTimeRemain:.1f}s remaining")
+            print(f"Match {matchNum} resumed with {matchTimeRemain:.1f}s remaining (paused {pauseDuration:.1f}s)")
         else:
             # Fresh start
             random.seed(matchNum)
@@ -174,26 +189,29 @@ def start_match():
 def pause_match():
     """
     Pause the running match, preserving remaining time.
+    Records the pause start time so fares can be shifted on resume.
     No-op if not running.
     """
-    global matchEndTime, matchRunning, matchPaused, matchTimeRemain
+    global matchEndTime, matchRunning, matchPaused, matchTimeRemain, _pauseStart
     with mutex:
         if matchRunning:
             matchTimeRemain = max(0, matchEndTime - time.time())
             matchEndTime    = 0
             matchRunning    = False
             matchPaused     = True
+            _pauseStart     = time.time()
             print(f"Match {matchNum} paused with {matchTimeRemain:.1f}s remaining")
 
 
 def cancel_match():
     """
-    Stop and reset the match, discarding remaining time.
+    Stop and reset the match, discarding remaining time and clearing all fares.
     Used by the Reset button.
     """
-    global matchEndTime, matchRunning, matchPaused, matchTimeRemain
+    global matchEndTime, matchRunning, matchPaused, matchTimeRemain, fares
     with mutex:
         matchEndTime    = 0
         matchRunning    = False
         matchPaused     = False
         matchTimeRemain = 0
+        fares           = []
