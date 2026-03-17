@@ -235,6 +235,11 @@ def configure_teams():
         
         if not teams:
             return jsonify({"success": False, "message": "No teams provided"}), 400
+
+        # Load check_fails for each kit from teams.yaml
+        yaml_path = Path(__file__).parent.parent / 'Config' / 'teams.yaml'
+        with open(yaml_path) as f:
+            teams_cfg = yaml.safe_load(f)['teams']
         
         with fms.mutex:
             # Clear existing teams
@@ -244,9 +249,10 @@ def configure_teams():
             for team_data in teams:
                 team_number = team_data['number']
                 team_name = team_data['name']
-                
-                team = Team(team_number)
-                team.name = team_name  # Add name attribute
+                check_fails = teams_cfg.get(team_number, {}).get('check_fails', 0)
+
+                team = Team(team_number, check_fails)
+                team.name = team_name
                 fms.teams[team_number] = team
         
         # Broadcast update to map monitor clients

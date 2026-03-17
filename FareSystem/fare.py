@@ -89,6 +89,7 @@ class Fare:
 
         if self.pickedUp:
             team.karma -= self.compute_karma()
+            team.karma = max(-100, min(100, team.karma))
 
         self.team = None
         self.inPosition = False
@@ -109,6 +110,7 @@ class Fare:
         if team is not None:
             team.money += self.compute_fare()
             team.karma += self.compute_karma()
+            team.karma = max(-100, min(100, team.karma))
             team.currentFare = None
             self.paid = True
 
