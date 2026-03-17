@@ -53,6 +53,42 @@
                 <div id="status-message" class="status-message"></div>
             </section>
 
+            <!-- Match Configuration Section -->
+            <section class="config-section match-config-section">
+                <h2>Match Configuration</h2>
+                <div class="match-config-card">
+                    <div class="match-fields">
+                        <div class="match-field">
+                            <label for="match-number">Match Number</label>
+                            <input type="number" id="match-number" min="1" value="1" placeholder="1">
+                        </div>
+                        <div class="match-field">
+                            <label for="match-duration">Duration (minutes)</label>
+                            <input type="number" id="match-duration" min="1" value="10" placeholder="10">
+                        </div>
+                    </div>
+                    <div class="action-buttons">
+                        <button id="configure-match-btn" class="btn btn-secondary">⚙️ Configure Match</button>
+                        <button id="start-match-btn" class="btn btn-start">▶ Start Match</button>
+                    </div>
+                    <div id="match-status-message" class="status-message"></div>
+                    <div class="match-state-display">
+                        <div class="stat-item">
+                            <span>Match:</span>
+                            <span id="current-match-num">—</span>
+                        </div>
+                        <div class="stat-item">
+                            <span>Status:</span>
+                            <span id="current-match-status">—</span>
+                        </div>
+                        <div class="stat-item">
+                            <span>Time Remaining:</span>
+                            <span id="current-time-remain">—</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- Current Teams Section -->
             <aside class="current-teams-section">
                 <h2>Active Teams</h2>

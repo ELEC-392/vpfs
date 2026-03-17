@@ -493,6 +493,32 @@ def team_status(team: int):
             "message": ""
         })
 
+@app.route("/api/admin/match/configure", methods=["POST"])
+@require_admin
+def admin_configure_match():
+    """
+    Configure the next match number and duration.
+    Expects JSON: {"match_number": int, "duration_minutes": float}
+    """
+    try:
+        data = request.get_json()
+        match_number = int(data["match_number"])
+        duration_seconds = int(float(data["duration_minutes"]) * 60)
+        fms.config_match(match_number, duration_seconds)
+        return jsonify({"success": True, "message": f"Match {match_number} configured ({duration_seconds}s)"})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 400
+
+@app.route("/api/admin/match/start", methods=["POST"])
+@require_admin
+def admin_start_match():
+    """Start the configured match."""
+    try:
+        fms.start_match()
+        return jsonify({"success": True, "message": "Match started"})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 400
+
 @app.route("/whereami/<int:team>")
 def whereami_get(team: int):
     """

@@ -18,6 +18,10 @@ class MapMonitor {
         this.MAP_WIDTH_CM  = 605;
         this.MAP_HEIGHT_CM = 490;
 
+        this.matchEndTime  = 0;
+        this.matchDuration = 0;
+        this.matchRunning  = false;
+
         // Fare type mapping (enum value to name)
         this.fareTypeMap = {
             0: 'STANDARD',
@@ -49,16 +53,19 @@ class MapMonitor {
         this.faresUpdateInterval = setInterval(() => {
             this.fetchFares();
             this.fetchTeamData();
+            this.fetchMatchState();
         }, 2000);
         
         // Start countdown timer update (every second)
         this.countdownInterval = setInterval(() => {
             this.updateFareCountdowns();
+            this.updateMatchCountdown();
         }, 1000);
         
         // Initial fetch of fares and team data
         this.fetchFares();
         this.fetchTeamData();
+        this.fetchMatchState();
     }
 
     connectWebSocket() {
@@ -130,6 +137,54 @@ class MapMonitor {
         }
     }
     
+    async fetchMatchState() {
+        try {
+            const response = await fetch('/match');
+            if (response.ok) {
+                const data = await response.json();
+                this.matchRunning  = data.matchStart;
+                this.matchEndTime  = data.matchStart ? (Date.now() / 1000 + data.timeRemain) : 0;
+                this.matchDuration = this.matchDuration || 1; // keep last known duration
+                if (data.timeRemain > 0) this.matchDuration = data.timeRemain + (this.matchDuration - this.matchDuration); // update on first call
+                // Recalculate duration when match is running using timeRemain + elapsed
+                if (data.matchStart && data.timeRemain > 0) {
+                    this._matchTotalSecs = this._matchTotalSecs || data.timeRemain;
+                }
+                if (!data.matchStart) this._matchTotalSecs = null;
+                this.updateMatchCountdown();
+            }
+        } catch (e) {
+            console.error('Error fetching match state:', e);
+        }
+    }
+
+    updateMatchCountdown() {
+        const timeEl = document.getElementById('countdown-time');
+        const barEl  = document.getElementById('countdown-bar');
+        if (!timeEl || !barEl) return;
+
+        if (!this.matchRunning || !this.matchEndTime) {
+            timeEl.textContent = '--:--';
+            timeEl.className   = 'countdown-time';
+            barEl.style.width  = '100%';
+            barEl.className    = 'countdown-bar';
+            return;
+        }
+
+        const secsLeft = Math.max(0, this.matchEndTime - Date.now() / 1000);
+        const total    = this._matchTotalSecs || 1;
+        const pct      = (secsLeft / total) * 100;
+        const m = Math.floor(secsLeft / 60).toString().padStart(2, '0');
+        const s = Math.floor(secsLeft % 60).toString().padStart(2, '0');
+
+        timeEl.textContent = `${m}:${s}`;
+        barEl.style.width  = `${pct}%`;
+
+        const expiring = secsLeft <= 60;
+        timeEl.className = 'countdown-time' + (secsLeft === 0 ? ' finished' : expiring ? ' expiring' : '');
+        barEl.className  = 'countdown-bar'  + (expiring ? ' expiring' : '');
+    }
+
     async fetchTeamData() {
         try {
             const response = await fetch('/dashboard/teams');

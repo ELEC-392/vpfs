@@ -24,6 +24,9 @@ class AdminPanel {
         
         // Load system info
         await this.loadSystemInfo();
+
+        // Start polling match state
+        setInterval(() => this.loadSystemInfo(), 3000);
     }
 
     async loadKnownTeams() {
@@ -54,6 +57,16 @@ class AdminPanel {
         // Clear button
         document.getElementById('clear-btn').addEventListener('click', () => {
             this.clearAllTeams();
+        });
+
+        // Configure match button
+        document.getElementById('configure-match-btn').addEventListener('click', () => {
+            this.configureMatch();
+        });
+
+        // Start match button
+        document.getElementById('start-match-btn').addEventListener('click', () => {
+            this.startMatch();
         });
     }
 
@@ -273,10 +286,72 @@ class AdminPanel {
             if (response.ok) {
                 const data = await response.json();
                 document.getElementById('system-mode').textContent = data.mode;
+                // Update match state display
+                const matchNum = document.getElementById('current-match-num');
+                const matchStatus = document.getElementById('current-match-status');
+                const timeRemain = document.getElementById('current-time-remain');
+                if (matchNum)  matchNum.textContent  = data.match;
+                if (matchStatus) matchStatus.textContent = data.matchStart ? '🟢 Running' : '⏸ Not started';
+                if (timeRemain) {
+                    const secs = Math.max(0, Math.round(data.timeRemain));
+                    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+                    const s = (secs % 60).toString().padStart(2, '0');
+                    timeRemain.textContent = data.matchStart ? `${m}:${s}` : '—';
+                }
             }
         } catch (error) {
             console.error('Error loading system info:', error);
         }
+    }
+
+    async configureMatch() {
+        const matchNumber   = parseInt(document.getElementById('match-number').value);
+        const durationMins  = parseFloat(document.getElementById('match-duration').value);
+
+        if (!matchNumber || matchNumber < 1 || !durationMins || durationMins <= 0) {
+            this.showMatchStatus('Please enter a valid match number and duration', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/admin/match/configure', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ match_number: matchNumber, duration_minutes: durationMins })
+            });
+            const result = await response.json();
+            if (response.ok) {
+                this.showMatchStatus(result.message, 'success');
+                await this.loadSystemInfo();
+            } else {
+                this.showMatchStatus(result.message || 'Error configuring match', 'error');
+            }
+        } catch (error) {
+            this.showMatchStatus('Network error', 'error');
+        }
+    }
+
+    async startMatch() {
+        if (!confirm('Start the match now?')) return;
+        try {
+            const response = await fetch('/api/admin/match/start', { method: 'POST' });
+            const result = await response.json();
+            if (response.ok) {
+                this.showMatchStatus(result.message, 'success');
+                await this.loadSystemInfo();
+            } else {
+                this.showMatchStatus(result.message || 'Error starting match', 'error');
+            }
+        } catch (error) {
+            this.showMatchStatus('Network error', 'error');
+        }
+    }
+
+    showMatchStatus(message, type) {
+        const el = document.getElementById('match-status-message');
+        el.textContent = message;
+        el.className = `status-message ${type}`;
+        setTimeout(() => { el.className = 'status-message'; }, 4000);
     }
 
     updateTeamsCount(count) {
