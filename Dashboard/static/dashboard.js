@@ -191,6 +191,13 @@ class MapMonitor {
         }
 
         const secsLeft = Math.max(0, this.matchEndTime - Date.now() / 1000);
+
+        // Match just expired client-side — freeze fare timers immediately without
+        // waiting for the next server poll (which may be up to 2s away).
+        if (secsLeft === 0 && !this._pausedAtNow) {
+            this._pausedAtNow = Date.now() / 1000;
+        }
+
         const total    = this._matchTotalSecs || 1;
         const pct      = (secsLeft / total) * 100;
         const m = Math.floor(secsLeft / 60).toString().padStart(2, '0');
