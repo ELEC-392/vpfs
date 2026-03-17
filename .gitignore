@@ -7,6 +7,7 @@ __pycache__/
 
 # Others
 # *.png
+calibration_images/
 
 # Credentials (contain auth secrets)
 Config/teams.yaml
