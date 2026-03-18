@@ -84,6 +84,11 @@ class AdminPanel {
         document.getElementById('auto-register-toggle').addEventListener('change', (e) => {
             this.toggleAutoRegister(e.target.checked);
         });
+
+        // Fare lines toggle
+        document.getElementById('fare-lines-toggle').addEventListener('change', (e) => {
+            this.setFareLinesVisible(e.target.checked);
+        });
     }
 
     setTeamCount(count) {
@@ -404,6 +409,25 @@ class AdminPanel {
 
     updateTeamsCount(count) {
         document.getElementById('teams-registered').textContent = count;
+    }
+
+    async setFareLinesVisible(visible) {
+        try {
+            const response = await fetch('/api/admin/fare-lines', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ visible })
+            });
+            if (!response.ok) {
+                this.showMatchStatus('Error updating fare lines setting', 'error');
+                // Revert toggle
+                document.getElementById('fare-lines-toggle').checked = !visible;
+            }
+        } catch (error) {
+            console.error('Error setting fare lines visibility:', error);
+            this.showMatchStatus('Network error', 'error');
+            document.getElementById('fare-lines-toggle').checked = !visible;
+        }
     }
 
     async toggleAutoRegister(enabled) {

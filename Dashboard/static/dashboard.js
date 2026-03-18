@@ -126,12 +126,23 @@ class MapMonitor {
     
     async fetchFares() {
         try {
-            const response = await fetch('/fares');
-            if (response.ok) {
-                this.fares = await response.json();
+            const [faresResp, settingResp] = await Promise.all([
+                fetch('/fares'),
+                fetch('/api/settings/fare-lines')
+            ]);
+            if (faresResp.ok) {
+                this.fares = await faresResp.json();
                 console.log('Fetched fares:', this.fares.length, this.fares);
                 this.renderFares();
-                this.renderFareRoutes();
+                if (settingResp.ok) {
+                    const setting = await settingResp.json();
+                    this.fareRoutesVisible = setting.visible;
+                }
+                if (this.fareRoutesVisible !== false) {
+                    this.renderFareRoutes();
+                } else {
+                    this.clearFareRoutes();
+                }
                 this.updateStats();
             }
         } catch (error) {
@@ -224,11 +235,20 @@ class MapMonitor {
                     this.teamData[team.number] = team;
                 });
                 this.renderLegend();   // re-render to update CS scores and ordering
-                this.renderFareRoutes();
+                if (this.fareRoutesVisible !== false) {
+                    this.renderFareRoutes();
+                } else {
+                    this.clearFareRoutes();
+                }
             }
         } catch (error) {
             console.error('Error fetching team data:', error);
         }
+    }
+
+    clearFareRoutes() {
+        const svgLayer = document.getElementById('fare-routes-layer');
+        if (svgLayer) svgLayer.innerHTML = '';
     }
     
     renderFareRoutes() {

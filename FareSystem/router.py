@@ -590,6 +590,23 @@ def admin_stop_match():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 400
 
+# Whether fare route lines are shown on the map dashboard
+_fare_lines_visible = True
+
+@app.route("/api/settings/fare-lines", methods=["GET"])
+def get_fare_lines_setting():
+    """Public endpoint — returns whether fare route lines should be shown."""
+    return jsonify({"visible": _fare_lines_visible})
+
+@app.route("/api/admin/fare-lines", methods=["POST"])
+@require_admin
+def set_fare_lines_setting():
+    """Toggle fare route line visibility on the map dashboard."""
+    global _fare_lines_visible
+    data = request.get_json()
+    _fare_lines_visible = bool(data.get("visible", True))
+    return jsonify({"success": True, "visible": _fare_lines_visible})
+
 @app.route("/api/admin/match/reset", methods=["POST"])
 @require_admin
 def admin_reset_match():
