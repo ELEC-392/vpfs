@@ -375,7 +375,7 @@ class MapMonitor {
                 <div class="legend-info">
                     <div class="legend-name">${team.name}</div>
                     <div class="legend-coords" id="coords-${team.id}">x: ${Math.round(pos.x)} cm &nbsp; y: ${Math.round(pos.y)} cm</div>
-                    <div class="legend-stats" id="stats-${team.id}">$${money} &nbsp;&nbsp; ⭐${rep}</div>
+                    <div class="legend-stats" id="stats-${team.id}">$${money} &nbsp;&nbsp; ⭐<span class="${rep < 0 ? 'rep-neg' : ''}">${rep}</span></div>
                     <div class="legend-fare" id="fare-${team.id}"></div>
                 </div>
             `;
@@ -407,7 +407,7 @@ class MapMonitor {
                 const teamData = this.teamData[team.id] || {};
                 const money = teamData.money !== undefined ? Math.round(teamData.money) : '—';
                 const rep   = teamData.rep   !== undefined ? Math.round(teamData.rep)   : '—';
-                statsElement.textContent = `$${money}   ⭐${rep}`;
+                statsElement.innerHTML = `$${money} &nbsp;&nbsp; ⭐<span class="${rep < 0 ? 'rep-neg' : ''}">${rep}</span>`;
             }
 
             // Active fare row
@@ -554,9 +554,12 @@ class MapMonitor {
             duckElement.dataset.teamId = team.id;
             duckElement.id = `duck-${team.id}`;
 
+            const _nameNums = team.name.match(/\d+/g);
+            const _badgeNum = _nameNums ? _nameNums[_nameNums.length - 1] : team.id;
+
             duckElement.innerHTML = `
                 <img src="/assets/ducks/${team.duck}" alt="${team.name}">
-                <div class="duck-badge">${team.name.charAt(0).toUpperCase()}${team.id}</div>
+                <div class="duck-badge">${team.name.charAt(0).toUpperCase()}${_badgeNum}</div>
                 <div class="duck-label">${team.name}</div>
             `;
 
