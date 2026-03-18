@@ -476,12 +476,9 @@ class MapMonitor {
                 
                 fareElement.innerHTML = `
                     <div class="fare-header">
-                        <span class="fare-id">Fare #${fare.id}${isClaimed ? ' 🔒' : ''}</span>
+                        <span class="fare-id">#${fare.id}${isClaimed ? ' \uD83D\uDD12' : ''}</span>
+                        <span class="fare-pay">$${fare.pay.toFixed(2)}</span>
                         <span class="fare-type ${isSpecial ? 'special' : ''}">${fareTypeName}</span>
-                    </div>
-                    <div class="fare-details">
-                        <span class="fare-distance">📏 ${distance.toFixed(0)} cm</span>
-                        <span class="fare-timer" data-expiry="${fare.expiry}">⏱ ${this.formatTime(Math.max(0, timeLeft))}</span>
                     </div>
                 `;
                 

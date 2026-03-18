@@ -323,7 +323,7 @@ header h1 {
 }
 
 .fare-item {
-    padding: 12px;
+    padding: 7px 10px;
     background: #fef3c7;
     border-radius: 6px;
     border-left: 4px solid #f59e0b;
@@ -345,12 +345,21 @@ header h1 {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 6px;
+    gap: 6px;
 }
 
 .fare-id {
     font-weight: 700;
     color: #1f2937;
+    flex-shrink: 0;
+}
+
+.fare-pay {
+    font-weight: 700;
+    color: #065f46;
+    flex: 1;
+    text-align: left;
+    padding-left: 6px;
 }
 
 .fare-type {
