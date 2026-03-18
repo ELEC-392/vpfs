@@ -281,27 +281,24 @@ class MapMonitor {
             line.setAttribute('stroke-dasharray', '2,1');
             svgLayer.appendChild(line);
             
-            // Create start point (pickup)
+            // Create start point (pickup) — white fill, team-color border
             const startCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
             startCircle.setAttribute('cx', srcX);
             startCircle.setAttribute('cy', srcY);
             startCircle.setAttribute('r', '6');
-            startCircle.setAttribute('fill', teamColor);
-            startCircle.setAttribute('fill-opacity', '0.8');
-            startCircle.setAttribute('stroke', 'white');
+            startCircle.setAttribute('fill', 'white');
+            startCircle.setAttribute('stroke', teamColor);
             startCircle.setAttribute('stroke-width', '2');
             svgLayer.appendChild(startCircle);
             
-            // Create end point (dropoff)
+            // Create end point (dropoff) — team-color fill, white border
             const endCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
             endCircle.setAttribute('cx', destX);
             endCircle.setAttribute('cy', destY);
             endCircle.setAttribute('r', '7');
             endCircle.setAttribute('fill', teamColor);
-            endCircle.setAttribute('fill-opacity', '0.6');
             endCircle.setAttribute('stroke', 'white');
             endCircle.setAttribute('stroke-width', '2');
-            endCircle.setAttribute('stroke-dasharray', '3,2');
             svgLayer.appendChild(endCircle);
         }
     }

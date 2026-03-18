@@ -8,6 +8,7 @@ class AdminPanel {
         this.knownTeams = [];  // [{number, name}] from teams.yaml
         this.duckColors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png", "Violet.png", "Cyan.png"];
         this.activeTeams = {};
+        this.autoRegisterEnabled = false;
         
         this.init();
     }
@@ -77,6 +78,11 @@ class AdminPanel {
         // Reset match button
         document.getElementById('reset-match-btn').addEventListener('click', () => {
             this.resetMatch();
+        });
+
+        // Auto-register toggle
+        document.getElementById('auto-register-toggle').addEventListener('change', (e) => {
+            this.toggleAutoRegister(e.target.checked);
         });
     }
 
@@ -398,6 +404,37 @@ class AdminPanel {
 
     updateTeamsCount(count) {
         document.getElementById('teams-registered').textContent = count;
+    }
+
+    async toggleAutoRegister(enabled) {
+        this.autoRegisterEnabled = enabled;
+        const manualConfig = document.getElementById('manual-team-config');
+
+        if (enabled) {
+            manualConfig.classList.add('disabled');
+            try {
+                const response = await fetch('/api/admin/auto-register-teams', { method: 'POST' });
+                const result = await response.json();
+                if (response.ok) {
+                    this.showStatus(`Auto-registered ${result.teams} team(s) from teams.yaml`, 'success');
+                    await this.loadCurrentTeams();
+                } else {
+                    this.showStatus(result.message || 'Error during auto-registration', 'error');
+                    document.getElementById('auto-register-toggle').checked = false;
+                    manualConfig.classList.remove('disabled');
+                    this.autoRegisterEnabled = false;
+                }
+            } catch (error) {
+                console.error('Error auto-registering teams:', error);
+                this.showStatus('Network error during auto-registration', 'error');
+                document.getElementById('auto-register-toggle').checked = false;
+                manualConfig.classList.remove('disabled');
+                this.autoRegisterEnabled = false;
+            }
+        } else {
+            manualConfig.classList.remove('disabled');
+            this.showStatus('Manual team configuration enabled', 'success');
+        }
     }
 
     showStatus(message, type) {

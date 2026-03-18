@@ -223,6 +223,57 @@ def serve_current_teams():
             })
     return jsonify(teams_data)
 
+@app.route("/api/admin/auto-register-teams", methods=["POST"])
+@require_admin
+def auto_register_teams():
+    """
+    Register all teams from teams.yaml automatically.
+    Clears any existing teams and populates fms.teams from the config file.
+    """
+    try:
+        yaml_path = Path(__file__).parent.parent / 'Config' / 'teams.yaml'
+        with open(yaml_path, 'r') as f:
+            data = yaml.safe_load(f)
+
+        teams_cfg = data.get('teams', {})
+
+        with fms.mutex:
+            fms.teams.clear()
+            for kit_id, info in teams_cfg.items():
+                check_fails = info.get('check_fails', 0)
+                team = Team(kit_id, check_fails)
+                team.name = info['name']
+                fms.teams[kit_id] = team
+
+        duck_colors = ["Blue.png", "Red.png", "Green.png", "Yellow.png", "Purple.png", "Brown.png", "Grey.png", "Violet.png", "Cyan.png"]
+        with fms.mutex:
+            teams_data = []
+            positions = {}
+            for idx, team in enumerate(sorted(fms.teams.values(), key=lambda t: t.number)):
+                teams_data.append({
+                    "id": team.number,
+                    "name": getattr(team, 'name', f"Team {team.number}"),
+                    "duck": duck_colors[idx % len(duck_colors)]
+                })
+                positions[team.number] = {
+                    "x": team.pos.x,
+                    "y": team.pos.y
+                }
+
+        sock.emit('initial_state', {
+            'teams': teams_data,
+            'positions': positions
+        })
+
+        return jsonify({
+            "success": True,
+            "message": f"Auto-registered {len(teams_cfg)} team(s) from teams.yaml",
+            "teams": len(teams_cfg)
+        })
+    except Exception as e:
+        print(f"Error auto-registering teams: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
 @app.route("/api/admin/configure-teams", methods=["POST"])
 @require_admin
 def configure_teams():

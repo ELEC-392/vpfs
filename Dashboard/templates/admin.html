@@ -24,31 +24,48 @@
             <section class="config-section">
                 <h2>Team Configuration</h2>
                 
-                <!-- Number of Teams Selector -->
-                <div class="team-count-selector">
-                    <label for="team-count">Number of Teams:</label>
-                    <div class="number-buttons">
-                        <button class="num-btn" data-count="1">1</button>
-                        <button class="num-btn" data-count="2">2</button>
-                        <button class="num-btn" data-count="3">3</button>
-                        <button class="num-btn" data-count="4">4</button>
-                        <button class="num-btn" data-count="5">5</button>
-                        <button class="num-btn" data-count="6">6</button>
-                        <button class="num-btn" data-count="7">7</button>
-                        <button class="num-btn" data-count="8">8</button>
-                        <button class="num-btn" data-count="9">9</button>
+                <!-- Auto-Register Toggle -->
+                <div class="auto-register-toggle">
+                    <div class="toggle-row">
+                        <div>
+                            <div class="toggle-title">Auto-register from teams.yaml</div>
+                            <div class="toggle-hint">Registers all teams from the config file automatically. Disables manual team selection.</div>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="auto-register-toggle">
+                            <span class="toggle-slider"></span>
+                        </label>
                     </div>
                 </div>
 
-                <!-- Team Setup Grid -->
-                <div id="teams-grid" class="teams-grid">
-                    <!-- Teams will be dynamically added here -->
-                </div>
+                <!-- Manual Team Configuration (disabled when auto-register is on) -->
+                <div id="manual-team-config">
+                    <!-- Number of Teams Selector -->
+                    <div class="team-count-selector">
+                        <label for="team-count">Number of Teams:</label>
+                        <div class="number-buttons">
+                            <button class="num-btn" data-count="1">1</button>
+                            <button class="num-btn" data-count="2">2</button>
+                            <button class="num-btn" data-count="3">3</button>
+                            <button class="num-btn" data-count="4">4</button>
+                            <button class="num-btn" data-count="5">5</button>
+                            <button class="num-btn" data-count="6">6</button>
+                            <button class="num-btn" data-count="7">7</button>
+                            <button class="num-btn" data-count="8">8</button>
+                            <button class="num-btn" data-count="9">9</button>
+                        </div>
+                    </div>
 
-                <!-- Action Buttons -->
-                <div class="action-buttons">
-                    <button id="save-btn" class="btn btn-primary">💾 Save Configuration</button>
-                    <button id="clear-btn" class="btn btn-secondary">🗑️ Clear All Teams</button>
+                    <!-- Team Setup Grid -->
+                    <div id="teams-grid" class="teams-grid">
+                        <!-- Teams will be dynamically added here -->
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="action-buttons">
+                        <button id="save-btn" class="btn btn-primary">💾 Save Configuration</button>
+                        <button id="clear-btn" class="btn btn-secondary">🗑️ Clear All Teams</button>
+                    </div>
                 </div>
 
                 <!-- Status Message -->
