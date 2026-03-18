@@ -35,36 +35,45 @@
             <div class="right-panel">
                 <!-- Fares Sidebar -->
                 <aside class="right-sidebar">
-                <h2>Open Fares</h2>
-                <div id="fares-list">
-                    <!-- Fares will be dynamically populated -->
-                </div>
+                    <h2>Open Fares</h2>
+                    <div id="fares-list">
+                        <!-- Fares will be dynamically populated -->
+                    </div>
 
-                <!-- Match Countdown -->
-                <div class="countdown-widget" id="countdown-widget">
-                    <div class="countdown-label">Time Remaining</div>
-                    <div class="countdown-time" id="countdown-time">--:--</div>
-                    <div class="countdown-bar-bg">
-                        <div class="countdown-bar" id="countdown-bar"></div>
+                    <!-- Match Countdown -->
+                    <div class="countdown-widget" id="countdown-widget">
+                        <div class="countdown-label">Time Remaining</div>
+                        <div class="countdown-time" id="countdown-time">--:--</div>
+                        <div class="countdown-bar-bg">
+                            <div class="countdown-bar" id="countdown-bar"></div>
+                        </div>
                     </div>
-                </div>
 
-                <div class="stats">
-                    <h3>Statistics</h3>
-                    <div class="stat-item">
-                        <span>Active Teams:</span>
-                        <span id="active-teams">0</span>
+                    <div class="stats">
+                        <h3>Statistics</h3>
+                        <div class="stat-item">
+                            <span>Active Teams:</span>
+                            <span id="active-teams">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span>Active Fares:</span>
+                            <span id="active-fares">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span>Last Update:</span>
+                            <span id="last-update">Never</span>
+                        </div>
                     </div>
-                    <div class="stat-item">
-                        <span>Active Fares:</span>
-                        <span id="active-fares">0</span>
+                </aside>
+
+                <!-- Teams Sidebar -->
+                <aside class="teams-sidebar">
+                    <h2>Teams</h2>
+                    <div id="legend-items">
+                        <!-- Teams will be dynamically populated, sorted by Competition Score -->
                     </div>
-                    <div class="stat-item">
-                        <span>Last Update:</span>
-                        <span id="last-update">Never</span>
-                    </div>
-                </div>
-            </aside>
+                </aside>
+            </div>
         </div>
     </div>
 
