@@ -223,7 +223,7 @@ class MapMonitor {
                 teams.forEach(team => {
                     this.teamData[team.number] = team;
                 });
-                this.updateTeamFares();
+                this.renderLegend();   // re-render to update CS scores and ordering
                 this.renderFareRoutes();
             }
         } catch (error) {
@@ -357,7 +357,22 @@ class MapMonitor {
         const legendContainer = document.getElementById('legend-items');
         legendContainer.innerHTML = '';
 
-        this.teams.forEach(team => {
+        // Compute competition score CS = 0.5 * Ĉ + 0.5 * R̂
+        // where Ĉ and R̂ are min-max normalised money and reputation across all teams.
+        const moneyValues = this.teams.map(t => (this.teamData[t.id] || {}).money ?? 0);
+        const repValues   = this.teams.map(t => (this.teamData[t.id] || {}).rep   ?? 0);
+        const minM = Math.min(...moneyValues), maxM = Math.max(...moneyValues);
+        const minR = Math.min(...repValues),   maxR = Math.max(...repValues);
+        const norm = (v, lo, hi) => (hi === lo) ? 0.5 : (v - lo) / (hi - lo);
+
+        const teamsWithCS = this.teams.map(team => {
+            const td = this.teamData[team.id] || {};
+            const cHat = norm(td.money ?? 0, minM, maxM);
+            const rHat = norm(td.rep   ?? 0, minR, maxR);
+            return { team, cs: 0.5 * cHat + 0.5 * rHat };
+        }).sort((a, b) => b.cs - a.cs);
+
+        teamsWithCS.forEach(({ team, cs }) => {
             const legendItem = document.createElement('div');
             legendItem.className = 'legend-item';
             legendItem.dataset.teamId = team.id;
@@ -367,13 +382,14 @@ class MapMonitor {
             const teamData = this.teamData[team.id] || {};
             const money = teamData.money !== undefined ? Math.round(teamData.money) : '—';
             const rep   = teamData.rep   !== undefined ? Math.round(teamData.rep)   : '—';
+            const csDisp = (cs * 100).toFixed(0);
 
             legendItem.innerHTML = `
                 <div class="legend-duck">
                     <img src="/assets/ducks/${team.duck}" alt="${team.name}">
                 </div>
                 <div class="legend-info">
-                    <div class="legend-name">${team.name}</div>
+                    <div class="legend-name">${team.name} <span class="legend-cs">CS: ${csDisp}</span></div>
                     <div class="legend-coords" id="coords-${team.id}">x: ${Math.round(pos.x)} cm &nbsp; y: ${Math.round(pos.y)} cm</div>
                     <div class="legend-stats" id="stats-${team.id}">$${money} &nbsp;&nbsp; ⭐<span class="${rep < 0 ? 'rep-neg' : ''}">${rep}</span></div>
                     <div class="legend-fare" id="fare-${team.id}"></div>
