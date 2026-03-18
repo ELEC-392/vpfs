@@ -285,14 +285,14 @@ header h1 {
 
 /* Right Sidebar: Fares and Statistics */
 .right-sidebar {
-    width: 240px;
+    width: 280px;
     background: #ffffff;
     padding: 16px;
     border-radius: 8px;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
+    overflow: hidden;
     max-height: calc(100vh - 140px);
 }
 
@@ -345,7 +345,7 @@ header h1 {
     overflow-y: auto;
     overflow-x: visible;
     padding-right: 5px;
-    min-height: 200px;
+    min-height: 0;
 }
 
 /* Scrollbar styling for fares list */
