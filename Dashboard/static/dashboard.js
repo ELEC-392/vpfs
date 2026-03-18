@@ -539,6 +539,7 @@ class MapMonitor {
 
             duckElement.innerHTML = `
                 <img src="/assets/ducks/${team.duck}" alt="${team.name}">
+                <div class="duck-badge">${team.name.charAt(0).toUpperCase()}${team.id}</div>
                 <div class="duck-label">${team.name}</div>
             `;
 

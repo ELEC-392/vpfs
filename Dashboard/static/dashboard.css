@@ -143,6 +143,22 @@ header h1 {
     z-index: 100;
 }
 
+.duck .duck-badge {
+    position: absolute;
+    top: -6px;
+    right: -8px;
+    background: rgba(0, 0, 0, 0.75);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 8px;
+    white-space: nowrap;
+    pointer-events: none;
+    letter-spacing: 0.3px;
+}
+
 .duck .duck-label {
     position: absolute;
     top: -25px;
