@@ -256,6 +256,14 @@ header h1 {
     font-family: 'Courier New', monospace;
 }
 
+.legend-stats {
+    font-size: 10px;
+    color: #065f46;
+    font-weight: 600;
+    font-family: 'Courier New', monospace;
+    margin-top: 1px;
+}
+
 .legend-fare {
     font-size: 10px;
     color: #3b82f6;

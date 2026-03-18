@@ -364,15 +364,18 @@ class MapMonitor {
 
             const pos = this.positions[team.id] || { x: 0, y: 0 };
 
+            const teamData = this.teamData[team.id] || {};
+            const money = teamData.money !== undefined ? Math.round(teamData.money) : '—';
+            const rep   = teamData.rep   !== undefined ? Math.round(teamData.rep)   : '—';
+
             legendItem.innerHTML = `
                 <div class="legend-duck">
                     <img src="/assets/ducks/${team.duck}" alt="${team.name}">
                 </div>
                 <div class="legend-info">
                     <div class="legend-name">${team.name}</div>
-                    <div class="legend-coords" id="coords-${team.id}">
-                        x: ${pos.x.toFixed(1)} cm &nbsp; y: ${pos.y.toFixed(1)} cm
-                    </div>
+                    <div class="legend-coords" id="coords-${team.id}">x: ${Math.round(pos.x)} cm &nbsp; y: ${Math.round(pos.y)} cm</div>
+                    <div class="legend-stats" id="stats-${team.id}">$${money} &nbsp;&nbsp; ⭐${rep}</div>
                     <div class="legend-fare" id="fare-${team.id}"></div>
                 </div>
             `;
@@ -391,6 +394,23 @@ class MapMonitor {
     
     updateTeamFares() {
         this.teams.forEach(team => {
+            // Refresh position row
+            const coordsElement = document.getElementById(`coords-${team.id}`);
+            if (coordsElement) {
+                const pos = this.positions[team.id] || { x: 0, y: 0 };
+                coordsElement.textContent = `x: ${Math.round(pos.x)} cm   y: ${Math.round(pos.y)} cm`;
+            }
+
+            // Refresh money / rep row
+            const statsElement = document.getElementById(`stats-${team.id}`);
+            if (statsElement) {
+                const teamData = this.teamData[team.id] || {};
+                const money = teamData.money !== undefined ? Math.round(teamData.money) : '—';
+                const rep   = teamData.rep   !== undefined ? Math.round(teamData.rep)   : '—';
+                statsElement.textContent = `$${money}   ⭐${rep}`;
+            }
+
+            // Active fare row
             const fareElement = document.getElementById(`fare-${team.id}`);
             if (fareElement) {
                 const teamData = this.teamData[team.id];
@@ -597,7 +617,7 @@ class MapMonitor {
     updateLegendCoordinates(teamId, x, y) {
         const coordsElement = document.getElementById(`coords-${teamId}`);
         if (coordsElement) {
-            coordsElement.textContent = `x: ${x.toFixed(1)} cm   y: ${y.toFixed(1)} cm`;
+            coordsElement.textContent = `x: ${Math.round(x)} cm   y: ${Math.round(y)} cm`;
         }
     }
 
