@@ -10,15 +10,11 @@
     <div class="container">
         <header>
             <h1>🏆 Competition Ranking</h1>
-            <nav>
-                <a href="/dashboard" class="nav-link" target="_blank" rel="noopener">📍 Live Map</a>
-                <a href="/" class="nav-link">🏠 Home</a>
-            </nav>
         </header>
 
         {% if not by_cs %}
         <div class="empty-state">
-            <div class="empty-icon">🦆</div>
+            <div class="empty-icon">🏅</div>
             <p>No completed fares yet.<br>Rankings will appear once teams finish their first fare.</p>
         </div>
         {% else %}
