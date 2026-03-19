@@ -20,7 +20,7 @@ class MapMonitor {
 
         // Rendering offset in centimetres applied to duck and fare-line positions.
         // Increase X_SHIFT_CM to shift right, Y_SHIFT_CM to shift up.
-        this.X_SHIFT_CM = 5.0;
+        this.X_SHIFT_CM = 1.0;
         this.Y_SHIFT_CM = 10.0;
 
         this.matchEndTime  = 0;
