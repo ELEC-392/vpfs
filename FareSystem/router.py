@@ -27,6 +27,12 @@ from auth import authenticate
 from params import MODE, OperatingMode
 from team import Team
 
+# fms.py already inserts Databases/ into sys.path, so recorder is importable here.
+try:
+    import recorder
+except ImportError:
+    recorder = None
+
 # ---------------------------------------------------------------------------
 # Per-IP token bucket rate limiter
 # ---------------------------------------------------------------------------
@@ -814,6 +820,9 @@ def whereami_update(json):
                 if team not in fms.teams:
                     continue
                 fms.teams[team].update_position(Point(x, y), heading)
+                if recorder is not None and fms.matchRunning:
+                    has_fare = fms.teams[team].currentFare is not None
+                    recorder.record_position(fms.matchNum, team, x, y, heading, has_fare)
             # Broadcast position update to map monitor clients
             sock.emit('position_update', {
                 'team_id': team,
@@ -827,5 +836,8 @@ def whereami_update(json):
 if __name__ == "__main__":
     # Start background periodic task that advances match/fare state
     Thread(target=fms.periodic, daemon=True).start()
+    # Start the DB recorder (creates/verifies schema on first run).
+    if recorder is not None:
+        recorder.start()
     # Start HTTP + Socket.IO server; bind to all interfaces
     sock.run(app, host='0.0.0.0', allow_unsafe_werkzeug=True)

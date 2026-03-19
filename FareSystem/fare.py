@@ -1,4 +1,6 @@
 import random
+import sys
+from pathlib import Path
 
 from utils import Point
 from team import Team
@@ -11,6 +13,30 @@ from fare_types import (
     get_load_time_multiplier,
     get_reputation,
 )
+
+# Recorder is optional — fare.py stays functional even without it.
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "Databases"))
+    import recorder as _recorder
+except ImportError:
+    _recorder = None
+
+
+def _rec_event(
+    fare_uid: int,
+    event_type: str,
+    team_id=None,
+    team_x=None,
+    team_y=None,
+    money_after=None,
+    karma_after=None,
+) -> None:
+    """Fire-and-forget recorder call; silently skipped when recorder is absent."""
+    if _recorder is not None:
+        _recorder.record_event(
+            fare_uid, fare_uid // 1000, team_id, event_type,
+            team_x, team_y, money_after, karma_after,
+        )
 
 class Fare:
     def __init__(self, src : Point, dest: Point, fare_type: FareType, match_num: int = 0, sequence: int = 0):
@@ -71,6 +97,8 @@ class Fare:
 
         self.team = team.number
         team.currentFare = idx
+        _rec_event(self.unique_id, "CLAIMED", team_id=team.number,
+                   team_x=team.pos.x, team_y=team.pos.y)
         return None
 
     def drop_fare(self, idx: int, team: Team) -> str | None:
@@ -96,6 +124,9 @@ class Fare:
         self.pickedUp = False
         self._phaseTimeout = -1
         team.currentFare = None
+        _rec_event(self.unique_id, "DROPPED", team_id=team.number,
+                   team_x=team.pos.x, team_y=team.pos.y,
+                   money_after=team.money, karma_after=team.karma)
         return None
 
     def pay_fare(self, teams : list[Team]):
@@ -113,6 +144,8 @@ class Fare:
             team.karma = max(-100, min(100, team.karma))
             team.currentFare = None
             self.paid = True
+            _rec_event(self.unique_id, "PAID", team_id=self.team,
+                       money_after=team.money, karma_after=team.karma)
 
     def to_json_dict(self, idx: int, extended: bool):
         data = {
@@ -153,8 +186,12 @@ class Fare:
         # Update active status
         if not self.isActive:
             return
-        # Becomes inactive if time expires without a claiming team or the fare is completed
+        # Becomes inactive if time expires without a claiming team or the fare is completed.
+        # Note: a fare held by a team (self.team is not None) stays active until dropped/completed.
         self.isActive = (self.expiry > time.time() or self.team is not None) and not self.completed
+        if not self.isActive:
+            # Only reachable when self.team is None and the expiry has passed.
+            _rec_event(self.unique_id, "EXPIRED")
 
         if self.team is None or self.team not in teams:
             return
@@ -173,10 +210,15 @@ class Fare:
                 # If no timeout started, then start it
                 if self._phaseTimeout == -1:
                     self._phaseTimeout = time.time() + PICKUP_DURATION * get_load_time_multiplier(self.type)
+                    # First tick in pickup zone — record arrival.
+                    _rec_event(self.unique_id, "AT_PICKUP_ZONE", team_id=self.team,
+                               team_x=team.pos.x, team_y=team.pos.y)
                 # If timeout completed, then set picked up
                 elif self._phaseTimeout < time.time():
                     self.pickedUp = True
                     self._phaseTimeout = -1
+                    _rec_event(self.unique_id, "LOADED", team_id=self.team,
+                               team_x=team.pos.x, team_y=team.pos.y)
             else:
                 self.inPosition = False
                 self._phaseTimeout = -1
@@ -187,10 +229,15 @@ class Fare:
                 # If no timeout started, then start it
                 if self._phaseTimeout == -1:
                     self._phaseTimeout = time.time() + PICKUP_DURATION * get_load_time_multiplier(self.type)
+                    # First tick in dropoff zone — record arrival.
+                    _rec_event(self.unique_id, "AT_DROPOFF_ZONE", team_id=self.team,
+                               team_x=team.pos.x, team_y=team.pos.y)
                 # If timeout completed, then set fare completed
                 elif self._phaseTimeout < time.time():
                     self.completed = True
                     self._phaseTimeout = -1
+                    _rec_event(self.unique_id, "DELIVERED", team_id=self.team,
+                               team_x=team.pos.x, team_y=team.pos.y)
             else:
                 self._phaseTimeout = -1
                 self.inPosition = False

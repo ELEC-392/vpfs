@@ -16,6 +16,17 @@ Threading:
 
 import time
 import random
+import sys
+from pathlib import Path
+
+# Make the Databases package importable from FareSystem.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "Databases"))
+try:
+    import recorder
+    _HAS_RECORDER = True
+except ImportError:
+    recorder = None
+    _HAS_RECORDER = False
 
 from fare_gen import generate_fare
 from utils import Point
@@ -126,6 +137,21 @@ def periodic():
                             fares.append(fare)
                             fareSequence += 1
                             print(f"New Fare (ID: {fare.unique_id})")
+                            if _HAS_RECORDER:
+                                from fare_types import get_base_fare, get_distance_fare, get_load_time_multiplier
+                                recorder.record_fare_spawn(
+                                    fare.unique_id, matchNum, fare.type.name,
+                                    fare.src.x, fare.src.y,
+                                    fare.dest.x, fare.dest.y,
+                                    fare.dist,
+                                    get_base_fare(fare.type),
+                                    get_distance_fare(fare.type),
+                                    fare.compute_fare(),
+                                    fare.compute_karma(),
+                                    get_load_time_multiplier(fare.type),
+                                    time.time(), fare.expiry,
+                                )
+                                recorder.record_event(fare.unique_id, matchNum, None, "SPAWNED")
                         else:
                             print("Failed faregen")
 
@@ -158,6 +184,8 @@ def config_match(num: int, duration: int, seed: int | None = None):
             matchRunning    = False
             matchPaused     = False
             matchTimeRemain = 0
+            if _HAS_RECORDER:
+                recorder.record_match(num, matchSeed, duration)
 
 
 def _shift_fare_timestamps(secs: float):
@@ -198,6 +226,8 @@ def start_match():
             matchTimeRemain = matchDuration
             matchRunning    = True
             matchPaused     = False
+            if _HAS_RECORDER:
+                recorder.record_match_start(matchNum, time.time(), teams)
 
 
 def pause_match():
@@ -215,6 +245,9 @@ def pause_match():
             matchPaused     = True
             _pauseStart     = time.time()
             print(f"Match {matchNum} paused with {matchTimeRemain:.1f}s remaining")
+            # Record match end when the timer actually expires (not a mid-match pause).
+            if matchTimeRemain == 0 and _HAS_RECORDER:
+                recorder.record_match_end(matchNum, time.time(), teams)
 
 
 def cancel_match():
@@ -224,6 +257,8 @@ def cancel_match():
     """
     global matchEndTime, matchRunning, matchPaused, matchTimeRemain, fares
     with mutex:
+        if _HAS_RECORDER and (matchRunning or matchPaused):
+            recorder.record_match_end(matchNum, time.time(), teams)
         matchEndTime    = 0
         matchRunning    = False
         matchPaused     = False
