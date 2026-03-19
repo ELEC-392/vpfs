@@ -202,7 +202,9 @@ def serve_teams():
                 fare_idx = team.currentFare
                 if 0 <= fare_idx < len(fms.fares):
                     f = fms.fares[fare_idx]
-                    if f.pickedUp:
+                    if f.pickedUp and f.inPosition:
+                        fare_state = "at_dropoff"
+                    elif f.pickedUp:
                         fare_state = "to_dropoff"
                     elif f.inPosition:
                         fare_state = "at_pickup"

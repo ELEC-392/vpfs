@@ -459,6 +459,7 @@ class MapMonitor {
                         'to_pickup':  { icon: '🚕', label: 'to pickup',   cls: 'phase-to-pickup'  },
                         'at_pickup':  { icon: '📍', label: 'at pickup',   cls: 'phase-at-pickup'  },
                         'to_dropoff': { icon: '🚗', label: 'to dropoff',  cls: 'phase-to-dropoff' },
+                        'at_dropoff': { icon: '🏁', label: 'at dropoff',  cls: 'phase-at-dropoff' },
                     };
                     const phase = phaseMap[teamData.fareState];
                     const phaseHtml = phase
