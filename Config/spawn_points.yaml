@@ -212,8 +212,8 @@ spawn_points:
   - id: 22
     name: "P22"
     coordinates:
-      x: 435.0
-      y: 223.0
+      x: 387.0
+      y: 435.0
     active: true
     fare_type_bias:
       STANDARD: 0.3
