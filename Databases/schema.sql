@@ -103,16 +103,12 @@ CREATE INDEX IF NOT EXISTS idx_pos_match_team_ts ON position_samples(match_id, t
 
 -- ---------------------------------------------------------------------------
 -- Per-match per-team summary  (written at match end by the recorder)
--- All times in seconds; distances in centimetres (map coordinate units).
+-- All times in seconds.
 --
--- Useful queries:
---   total driven distance per team:
---     SELECT team_id, distance_total_cm FROM match_team_summary WHERE match_id=?
---
---   teams sorted by fares completed:
---     SELECT t.name, s.fares_completed, s.money_end
---     FROM match_team_summary s JOIN teams t USING(team_id)
---     WHERE s.match_id=? ORDER BY s.fares_completed DESC
+-- Useful query — teams sorted by fares completed:
+--   SELECT t.name, s.fares_completed, s.money_end
+--   FROM match_team_summary s JOIN teams t USING(team_id)
+--   WHERE s.match_id=? ORDER BY s.fares_completed DESC
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS match_team_summary (
     match_id                INTEGER NOT NULL,
@@ -127,9 +123,6 @@ CREATE TABLE IF NOT EXISTS match_team_summary (
     avg_time_loading_s      REAL,   -- AT_PICKUP_ZONE → LOADED
     avg_time_to_dropoff_s   REAL,   -- LOADED → AT_DROPOFF_ZONE
     avg_time_per_fare_s     REAL,   -- CLAIMED → DELIVERED
-
-    distance_total_cm       REAL,
-    distance_with_fare_cm   REAL,
 
     money_start             REAL,
     money_end               REAL,

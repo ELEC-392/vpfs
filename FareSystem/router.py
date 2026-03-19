@@ -833,7 +833,88 @@ def whereami_update(json):
     except ValidationError as e:
         print(f"Validation failed: {e}")
 
+
+@app.route("/ranking")
+def serve_ranking():
+    """
+    Serve the competition ranking page.
+    Ranks all teams that have completed at least one fare, aggregated across all matches.
+    Three columns: Overall (CS), Money, Reputation.
+    CS uses rank-based scoring: CS = 0.5 * money_rank + 0.5 * rep_rank (0–1, normalised).
+    """
+    if recorder is None:
+        return "Database not available", 503
+
+    db_path = recorder._db_path
+    import sqlite3 as _sqlite3
+
+    try:
+        con = _sqlite3.connect(db_path)
+        con.row_factory = _sqlite3.Row
+        cur = con.cursor()
+
+        # Aggregate across all matches: sum money earned, karma from their most recent match.
+        # Only include teams with at least one completed fare.
+        cur.execute("""
+            SELECT
+                t.team_id,
+                t.name,
+                SUM(s.fares_completed)  AS fares_completed,
+                SUM(s.money_earned)     AS total_money,
+                (
+                    SELECT karma_end
+                    FROM match_team_summary
+                    WHERE team_id = t.team_id
+                    ORDER BY match_id DESC
+                    LIMIT 1
+                )                       AS final_rep
+            FROM match_team_summary s
+            JOIN teams t USING(team_id)
+            WHERE s.fares_completed > 0
+            GROUP BY t.team_id, t.name
+            ORDER BY total_money DESC
+        """)
+        rows = [dict(r) for r in cur.fetchall()]
+        con.close()
+    except Exception as e:
+        print(f"Ranking DB error: {e}")
+        return "Database error", 500
+
+    if not rows:
+        return render_template('ranking.html', by_cs=[], by_money=[], by_rep=[])
+
+    n = len(rows)
+
+    # Assign rank-normalised scores (0 = last, 1 = first) for money and rep separately.
+    # Sorted ascending so rank index 0 = worst → normalised 0, index n-1 = best → normalised 1.
+    by_money_sorted = sorted(rows, key=lambda r: r['total_money'])
+    by_rep_sorted   = sorted(rows, key=lambda r: r['final_rep'])
+
+    money_rank = {r['team_id']: i / (n - 1) if n > 1 else 0.5 for i, r in enumerate(by_money_sorted)}
+    rep_rank   = {r['team_id']: i / (n - 1) if n > 1 else 0.5 for i, r in enumerate(by_rep_sorted)}
+
+    for r in rows:
+        tid = r['team_id']
+        r['cs']        = 0.5 * money_rank[tid] + 0.5 * rep_rank[tid]
+        r['cs_pct']    = round(r['cs'] * 100)
+        r['money_disp'] = round(r['total_money'])
+        r['rep_disp']   = round(r['final_rep'])
+
+    by_cs    = sorted(rows, key=lambda r: r['cs'],          reverse=True)
+    by_money = sorted(rows, key=lambda r: r['total_money'], reverse=True)
+    by_rep   = sorted(rows, key=lambda r: r['final_rep'],   reverse=True)
+
+    return render_template('ranking.html', by_cs=by_cs, by_money=by_money, by_rep=by_rep)
+
+
 if __name__ == "__main__":
+    # Start background periodic task that advances match/fare state
+    Thread(target=fms.periodic, daemon=True).start()
+    # Start the DB recorder (creates/verifies schema on first run).
+    if recorder is not None:
+        recorder.start()
+    # Start HTTP + Socket.IO server; bind to all interfaces
+    sock.run(app, host='0.0.0.0', allow_unsafe_werkzeug=True)
     # Start background periodic task that advances match/fare state
     Thread(target=fms.periodic, daemon=True).start()
     # Start the DB recorder (creates/verifies schema on first run).

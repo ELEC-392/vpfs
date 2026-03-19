@@ -1,0 +1,191 @@
+/* VPFS Competition Ranking Page */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+    min-height: 100vh;
+    padding: 20px;
+}
+
+.container {
+    max-width: 1100px;
+    margin: 0 auto;
+}
+
+/* Header */
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 32px;
+    padding: 0 4px;
+}
+
+header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: white;
+    letter-spacing: -0.5px;
+}
+
+nav {
+    display: flex;
+    gap: 12px;
+}
+
+.nav-link {
+    color: white;
+    text-decoration: none;
+    padding: 7px 14px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.15);
+    font-size: 14px;
+    transition: background 0.2s;
+}
+
+.nav-link:hover {
+    background: rgba(255, 255, 255, 0.25);
+}
+
+/* Empty state */
+.empty-state {
+    text-align: center;
+    color: rgba(255, 255, 255, 0.8);
+    padding: 80px 20px;
+}
+
+.empty-icon {
+    font-size: 64px;
+    margin-bottom: 16px;
+}
+
+.empty-state p {
+    font-size: 18px;
+    line-height: 1.6;
+}
+
+/* Three-column layout */
+.columns {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    align-items: start;
+}
+
+/* Column */
+.column {
+    background: white;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.column-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 16px 20px;
+    color: white;
+}
+
+.column-header.overall { background: linear-gradient(135deg, #7c3aed, #5b21b6); }
+.column-header.money   { background: linear-gradient(135deg, #059669, #065f46); }
+.column-header.rep     { background: linear-gradient(135deg, #d97706, #92400e); }
+
+.column-icon {
+    font-size: 20px;
+}
+
+.column-title {
+    font-size: 17px;
+    font-weight: 700;
+    flex: 1;
+}
+
+.column-sub {
+    font-size: 11px;
+    opacity: 0.8;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Team list */
+.team-list {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* Team card */
+.team-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #f9fafb;
+    border: 2px solid transparent;
+    transition: transform 0.15s;
+}
+
+.team-card:hover {
+    transform: translateX(3px);
+}
+
+.team-card.gold   { border-color: #f59e0b; background: #fffbeb; }
+.team-card.silver { border-color: #9ca3af; background: #f9fafb; }
+.team-card.bronze { border-color: #d97706; background: #fff7ed; }
+
+/* Rank badge */
+.rank-badge {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: #e5e7eb;
+    color: #4b5563;
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.gold   .rank-badge { background: #f59e0b; color: white; }
+.silver .rank-badge { background: #9ca3af; color: white; }
+.bronze .rank-badge { background: #d97706; color: white; }
+
+.team-name {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1f2937;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.team-value {
+    font-size: 13px;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.overall-value { color: #7c3aed; }
+.money-value   { color: #059669; }
+.rep-value     { color: #d97706; }
+
+/* Responsive: stack on narrow screens */
+@media (max-width: 700px) {
+    .columns {
+        grid-template-columns: 1fr;
+    }
+}

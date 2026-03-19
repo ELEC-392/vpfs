@@ -123,8 +123,6 @@ CREATE TABLE IF NOT EXISTS match_team_summary (
     avg_time_loading_s    REAL,
     avg_time_to_dropoff_s REAL,
     avg_time_per_fare_s   REAL,
-    distance_total_cm     REAL,
-    distance_with_fare_cm REAL,
     money_start           REAL,
     money_end             REAL,
     money_earned          REAL,
@@ -464,26 +462,6 @@ def _write_team_summary(
     def _avg(lst: list) -> "float | None":
         return sum(lst) / len(lst) if lst else None
 
-    # -- Driven distances -----------------------------------------------------
-    dist_row = conn.execute(
-        """WITH ordered AS (
-               SELECT x, y, has_fare,
-                      LAG(x) OVER w AS px,
-                      LAG(y) OVER w AS py
-               FROM position_samples
-               WHERE match_id=? AND team_id=?
-               WINDOW w AS (ORDER BY ts)
-           )
-           SELECT
-               SUM(SQRT((x-px)*(x-px)+(y-py)*(y-py)))                              AS total_dist,
-               SUM(CASE WHEN has_fare=1 THEN SQRT((x-px)*(x-px)+(y-py)*(y-py)) ELSE 0 END) AS fare_dist
-           FROM ordered WHERE px IS NOT NULL""",
-        (match_id, team_id),
-    ).fetchone()
-
-    dist_total     = dist_row["total_dist"]     if dist_row else None
-    dist_with_fare = dist_row["fare_dist"]      if dist_row else None
-
     # -- Money / karma --------------------------------------------------------
     money_start = _match_start_money.get(team_id)
     karma_start = _match_start_karma.get(team_id)
@@ -500,16 +478,14 @@ def _write_team_summary(
                fares_completed, fares_dropped, fares_expired_held,
                avg_time_to_pickup_s, avg_time_loading_s,
                avg_time_to_dropoff_s, avg_time_per_fare_s,
-               distance_total_cm, distance_with_fare_cm,
                money_start, money_end, money_earned,
                karma_start, karma_end
-           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             match_id, team_id,
             fares_completed, fares_dropped, fares_expired_held,
             _avg(times_to_pickup), _avg(times_loading),
             _avg(times_to_dropoff), _avg(times_per_fare),
-            dist_total, dist_with_fare,
             money_start, money_end, money_earned,
             karma_start, karma_end,
         ),

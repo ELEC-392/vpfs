@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VPFS — Competition Ranking</title>
+    <link rel="stylesheet" href="/static/ranking.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🏆 Competition Ranking</h1>
+            <nav>
+                <a href="/dashboard" class="nav-link" target="_blank" rel="noopener">📍 Live Map</a>
+                <a href="/" class="nav-link">🏠 Home</a>
+            </nav>
+        </header>
+
+        {% if not by_cs %}
+        <div class="empty-state">
+            <div class="empty-icon">🦆</div>
+            <p>No completed fares yet.<br>Rankings will appear once teams finish their first fare.</p>
+        </div>
+        {% else %}
+        <div class="columns">
+
+            <!-- Overall (CS) -->
+            <div class="column">
+                <div class="column-header overall">
+                    <span class="column-icon">🏅</span>
+                    <span class="column-title">Overall</span>
+                    <span class="column-sub">CS score</span>
+                </div>
+                <div class="team-list">
+                    {% for team in by_cs %}
+                    <div class="team-card {% if loop.index == 1 %}gold{% elif loop.index == 2 %}silver{% elif loop.index == 3 %}bronze{% endif %}">
+                        <div class="rank-badge">{{ loop.index }}</div>
+                        <div class="team-name">{{ team.name }}</div>
+                        <div class="team-value overall-value">{{ team.cs_pct }}%</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Money -->
+            <div class="column">
+                <div class="column-header money">
+                    <span class="column-icon">💰</span>
+                    <span class="column-title">Money</span>
+                    <span class="column-sub">total earned</span>
+                </div>
+                <div class="team-list">
+                    {% for team in by_money %}
+                    <div class="team-card {% if loop.index == 1 %}gold{% elif loop.index == 2 %}silver{% elif loop.index == 3 %}bronze{% endif %}">
+                        <div class="rank-badge">{{ loop.index }}</div>
+                        <div class="team-name">{{ team.name }}</div>
+                        <div class="team-value money-value">${{ team.money_disp }}</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Reputation -->
+            <div class="column">
+                <div class="column-header rep">
+                    <span class="column-icon">⭐</span>
+                    <span class="column-title">Reputation</span>
+                    <span class="column-sub">average score</span>
+                </div>
+                <div class="team-list">
+                    {% for team in by_rep %}
+                    <div class="team-card {% if loop.index == 1 %}gold{% elif loop.index == 2 %}silver{% elif loop.index == 3 %}bronze{% endif %}">
+                        <div class="rank-badge">{{ loop.index }}</div>
+                        <div class="team-name">{{ team.name }}</div>
+                        <div class="team-value rep-value">{{ team.rep_disp }}</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        // Auto-refresh every 10 seconds
+        setTimeout(() => location.reload(), 10000);
+    </script>
+</body>
+</html>
