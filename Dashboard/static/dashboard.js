@@ -18,6 +18,11 @@ class MapMonitor {
         this.MAP_WIDTH_CM  = 605;
         this.MAP_HEIGHT_CM = 490;
 
+        // Rendering offset in centimetres applied to duck and fare-line positions.
+        // Increase X_SHIFT_CM to shift right, Y_SHIFT_CM to shift up.
+        this.X_SHIFT_CM = 0.05;
+        this.Y_SHIFT_CM = 0.10;
+
         this.matchEndTime  = 0;
         this.matchDuration = 0;
         this.matchRunning  = false;
@@ -281,11 +286,11 @@ class MapMonitor {
             const team = this.teams.find(t => t.id === parseInt(teamNum));
             const teamColor = team ? (this.teamColors[team.duck] || '#6b7280') : '#6b7280';
             
-            // Fare coordinates are in cm — use directly in the cm viewBox (Y flipped: origin = bottom-left)
-            const srcX  = fare.src.x;
-            const srcY  = this.MAP_HEIGHT_CM - fare.src.y;
-            const destX = fare.dest.x;
-            const destY = this.MAP_HEIGHT_CM - fare.dest.y;
+            // Fare coordinates are in cm — apply offset then use directly in the cm viewBox (Y flipped: origin = bottom-left)
+            const srcX  = fare.src.x  + this.X_SHIFT_CM;
+            const srcY  = this.MAP_HEIGHT_CM - (fare.src.y  + this.Y_SHIFT_CM);
+            const destX = fare.dest.x + this.X_SHIFT_CM;
+            const destY = this.MAP_HEIGHT_CM - (fare.dest.y + this.Y_SHIFT_CM);
             
             console.log(`Drawing route for team ${teamNum} with color ${teamColor} from (${srcX.toFixed(1)}, ${srcY.toFixed(1)}) to (${destX.toFixed(1)}, ${destY.toFixed(1)})`);
             
@@ -619,9 +624,9 @@ class MapMonitor {
         const duckElement = this.duckElements[teamId];
         if (!duckElement) return;
 
-        // Convert cm coordinates to percentage of map dimensions (Y flipped: origin = bottom-left)
-        const xPercent = (x / this.MAP_WIDTH_CM)  * 100;
-        const yPercent = (1 - y / this.MAP_HEIGHT_CM) * 100;
+        // Apply rendering offset then convert to percentage (Y flipped: origin = bottom-left)
+        const xPercent = ((x + this.X_SHIFT_CM) / this.MAP_WIDTH_CM)  * 100;
+        const yPercent = (1 - (y + this.Y_SHIFT_CM) / this.MAP_HEIGHT_CM) * 100;
 
         // Apply position with CSS transform
         duckElement.style.left = `${xPercent}%`;
