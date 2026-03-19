@@ -259,13 +259,13 @@ header h1 {
 }
 
 .legend-coords {
-    font-size: 10px;
+    font-size: 11px;
     color: #6b7280;
     font-family: 'Courier New', monospace;
 }
 
 .legend-stats {
-    font-size: 10px;
+    font-size: 11px;
     color: #065f46;
     font-weight: 600;
     font-family: 'Courier New', monospace;
@@ -277,7 +277,7 @@ header h1 {
 }
 
 .legend-fare {
-    font-size: 10px;
+    font-size: 11px;
     color: #3b82f6;
     font-weight: 500;
     margin-top: 2px;

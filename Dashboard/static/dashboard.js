@@ -411,7 +411,7 @@ class MapMonitor {
                     <img src="/assets/ducks/${team.duck}" alt="${team.name}">
                 </div>
                 <div class="legend-info">
-                    <div class="legend-name">${team.name} <span class="legend-cs">CS: ${csDisp}</span></div>
+                    <div class="legend-name">${team.name} <span class="legend-cs">CS: ${csDisp}%</span></div>
                     <div class="legend-coords" id="coords-${team.id}">x: ${Math.round(pos.x)} cm &nbsp; y: ${Math.round(pos.y)} cm</div>
                     <div class="legend-stats" id="stats-${team.id}">$${money} &nbsp;&nbsp; ⭐<span class="${rep < 0 ? 'rep-neg' : ''}">${rep}</span></div>
                     <div class="legend-fare" id="fare-${team.id}"></div>
