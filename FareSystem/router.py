@@ -191,11 +191,23 @@ def serve_teams():
     data = []
     with fms.mutex:
         for team in fms.teams.values():
+            fare_state = None
+            if team.currentFare is not None:
+                fare_idx = team.currentFare
+                if 0 <= fare_idx < len(fms.fares):
+                    f = fms.fares[fare_idx]
+                    if f.pickedUp:
+                        fare_state = "to_dropoff"
+                    elif f.inPosition:
+                        fare_state = "at_pickup"
+                    else:
+                        fare_state = "to_pickup"
             data.append({
                 "number": team.number,
                 "money": team.money,
                 "rep": team.karma,
                 "currentFare": team.currentFare,
+                "fareState": fare_state,
                 "position": {
                     "x": team.pos.x,
                     "y": team.pos.y

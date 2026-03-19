@@ -281,7 +281,36 @@ header h1 {
     color: #3b82f6;
     font-weight: 500;
     margin-top: 2px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: nowrap;
+    min-width: 0;
 }
+
+.fare-id-tag {
+    background: #1e3a5f;
+    color: #e0f2fe;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+    flex-shrink: 0;
+}
+
+.fare-phase {
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.phase-to-pickup  { background: #dbeafe; color: #1d4ed8; }
+.phase-at-pickup  { background: #fef3c7; color: #92400e; }
+.phase-to-dropoff { background: #ede9fe; color: #5b21b6; }
 
 /* Right Sidebar: Fares and Statistics */
 .right-sidebar {

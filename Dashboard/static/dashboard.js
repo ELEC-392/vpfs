@@ -20,8 +20,8 @@ class MapMonitor {
 
         // Rendering offset in centimetres applied to duck and fare-line positions.
         // Increase X_SHIFT_CM to shift right, Y_SHIFT_CM to shift up.
-        this.X_SHIFT_CM = 0.05;
-        this.Y_SHIFT_CM = 0.10;
+        this.X_SHIFT_CM = 5.0;
+        this.Y_SHIFT_CM = 10.0;
 
         this.matchEndTime  = 0;
         this.matchDuration = 0;
@@ -454,15 +454,20 @@ class MapMonitor {
                 const teamData = this.teamData[team.id];
                 if (teamData && teamData.currentFare !== null && teamData.currentFare !== undefined) {
                     const fare = this.fares[teamData.currentFare];
-                    if (fare) {
-                        fareElement.textContent = `Active Fare: #${fare.id}`;
-                        fareElement.style.display = 'block';
-                    } else {
-                        fareElement.textContent = `Active Fare: #${teamData.currentFare}`;
-                        fareElement.style.display = 'block';
-                    }
+                    const fareId = fare ? fare.id : teamData.currentFare;
+                    const phaseMap = {
+                        'to_pickup':  { icon: '🚕', label: 'to pickup',   cls: 'phase-to-pickup'  },
+                        'at_pickup':  { icon: '📍', label: 'at pickup',   cls: 'phase-at-pickup'  },
+                        'to_dropoff': { icon: '🚗', label: 'to dropoff',  cls: 'phase-to-dropoff' },
+                    };
+                    const phase = phaseMap[teamData.fareState];
+                    const phaseHtml = phase
+                        ? ` <span class="fare-phase ${phase.cls}">${phase.icon} ${phase.label}</span>`
+                        : '';
+                    fareElement.innerHTML = `<span class="fare-id-tag">#${fareId}</span>${phaseHtml}`;
+                    fareElement.style.display = 'block';
                 } else {
-                    fareElement.textContent = '';
+                    fareElement.innerHTML = '';
                     fareElement.style.display = 'none';
                 }
             }
