@@ -10,6 +10,8 @@ HTTP and WebSocket API for VPFS.
 import time
 from pathlib import Path
 import yaml
+from collections import defaultdict
+from threading import Lock
 
 from functools import wraps
 
@@ -25,7 +27,59 @@ from auth import authenticate
 from params import MODE, OperatingMode
 from team import Team
 
+# ---------------------------------------------------------------------------
+# Per-IP token bucket rate limiter
+# ---------------------------------------------------------------------------
+class _TokenBucket:
+    """Thread-safe token bucket for a single IP address."""
+    __slots__ = ('_tokens', '_last', '_rate', '_capacity', '_lock')
+
+    def __init__(self, rate: float, capacity: float):
+        self._rate = rate          # tokens added per second
+        self._capacity = capacity  # maximum token count
+        self._tokens = capacity
+        self._last = time.monotonic()
+        self._lock = Lock()
+
+    def consume(self) -> bool:
+        """Try to consume one token. Returns True if allowed, False if rate-limited."""
+        with self._lock:
+            now = time.monotonic()
+            self._tokens = min(
+                self._capacity,
+                self._tokens + (now - self._last) * self._rate
+            )
+            self._last = now
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return True
+            return False
+
+
+class _RateLimiter:
+    """Maps each remote IP to its own TokenBucket."""
+    # Allow 10 req/s on average (2× the intended 5 Hz publish rate),
+    # with a burst capacity of 15 tokens.
+    RATE = 10.0
+    CAPACITY = 15.0
+
+    def __init__(self):
+        self._buckets: dict[str, _TokenBucket] = defaultdict(
+            lambda: _TokenBucket(self.RATE, self.CAPACITY)
+        )
+        self._lock = Lock()
+
+    def is_allowed(self, ip: str) -> bool:
+        with self._lock:
+            bucket = self._buckets[ip]
+        return bucket.consume()
+
+
+_rate_limiter = _RateLimiter()
+
+# ---------------------------------------------------------------------------
 # Load admin credentials
+# ---------------------------------------------------------------------------
 _admin_config_path = Path(__file__).resolve().parents[1] / "Config" / "admin.yaml"
 with open(_admin_config_path) as _f:
     _admin_cfg = yaml.safe_load(_f)
@@ -731,6 +785,9 @@ def whereami_update(json):
     """
     if request.remote_addr not in ("127.0.0.1", "::1"):
         print(f"Rejected whereami update from {request.remote_addr} (not localhost)")
+        return
+    if not _rate_limiter.is_allowed(request.remote_addr):
+        print(f"Rate-limited whereami update from {request.remote_addr}")
         return
     # print(f"Recv whereami update from {request.remote_addr}")
 
