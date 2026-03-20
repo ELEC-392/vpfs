@@ -28,6 +28,9 @@ class AdminPanel {
 
         // Start polling match state
         setInterval(() => this.loadSystemInfo(), 3000);
+
+        // Load recording state
+        await this.loadRecordingState();
     }
 
     async loadKnownTeams() {
@@ -83,6 +86,11 @@ class AdminPanel {
         // Auto-register toggle
         document.getElementById('auto-register-toggle').addEventListener('change', (e) => {
             this.toggleAutoRegister(e.target.checked);
+        });
+
+        // Recording toggle
+        document.getElementById('recording-toggle').addEventListener('change', (e) => {
+            this.setRecordingEnabled(e.target.checked);
         });
 
         // Fare lines toggle
@@ -409,6 +417,41 @@ class AdminPanel {
 
     updateTeamsCount(count) {
         document.getElementById('teams-registered').textContent = count;
+    }
+
+    async loadRecordingState() {
+        try {
+            const response = await fetch('/api/settings/recording');
+            if (response.ok) {
+                const data = await response.json();
+                document.getElementById('recording-toggle').checked = data.enabled;
+            }
+        } catch (error) {
+            console.error('Error loading recording state:', error);
+        }
+    }
+
+    async setRecordingEnabled(enabled) {
+        try {
+            const response = await fetch('/api/admin/recording', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled })
+            });
+            if (!response.ok) {
+                this.showMatchStatus('Error updating recording setting', 'error');
+                document.getElementById('recording-toggle').checked = !enabled;
+            } else {
+                this.showMatchStatus(
+                    enabled ? 'Database recording enabled' : 'Database recording disabled (test mode)',
+                    enabled ? 'success' : 'error'
+                );
+            }
+        } catch (error) {
+            console.error('Error setting recording state:', error);
+            this.showMatchStatus('Network error', 'error');
+            document.getElementById('recording-toggle').checked = !enabled;
+        }
     }
 
     async setFareLinesVisible(visible) {

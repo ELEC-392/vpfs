@@ -664,8 +664,29 @@ def admin_stop_match():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 400
 
+# Whether database recording is enabled (toggled from admin panel)
+_recording_enabled = True
+
 # Whether fare route lines are shown on the map dashboard
 _fare_lines_visible = True
+
+@app.route("/api/settings/recording", methods=["GET"])
+def get_recording_setting():
+    """Public endpoint — returns whether database recording is enabled."""
+    return jsonify({"enabled": recorder.is_recording_enabled()})
+
+
+@app.route("/api/admin/recording", methods=["POST"])
+@require_admin
+def set_recording_setting():
+    """Enable or disable database recording."""
+    global _recording_enabled
+    data = request.get_json()
+    enabled = bool(data.get("enabled", True))
+    _recording_enabled = enabled
+    recorder.set_recording_enabled(enabled)
+    return jsonify({"success": True, "enabled": enabled})
+
 
 @app.route("/api/settings/fare-lines", methods=["GET"])
 def get_fare_lines_setting():

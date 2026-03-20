@@ -191,8 +191,26 @@ def _writer() -> None:
     conn.close()
 
 
+# Whether database recording is active.  Can be toggled at runtime via
+# set_recording_enabled() without stopping/starting the writer thread.
+_recording_enabled: bool = True
+
+
+def set_recording_enabled(enabled: bool) -> None:
+    """Enable or disable database recording at runtime."""
+    global _recording_enabled
+    _recording_enabled = bool(enabled)
+    state = "enabled" if _recording_enabled else "disabled"
+    print(f"[recorder] recording {state}")
+
+
+def is_recording_enabled() -> bool:
+    """Return current recording state."""
+    return _recording_enabled
+
+
 def _enqueue(sql: str, params: tuple) -> None:
-    if _running:
+    if _running and _recording_enabled:
         _write_queue.put((sql, params))
 
 
