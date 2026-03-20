@@ -48,8 +48,8 @@ def _addTag(tag: ReferenceTag):
 #
 # The more reference tags a camera sees, the more stable its pose estimate.
 
-_addTag(ReferenceTag(95, 5.0, 12.5))        # corner marker
-_addTag(ReferenceTag(96, 138.5, 12.5))      # +X axis reference (105 cm from tag 95)
-_addTag(ReferenceTag(97, 139.5, 104.5))    # far-right corner
-_addTag(ReferenceTag(98, 5.5, 104.5))      # far-left corner
-_addTag(ReferenceTag(99, 40.0, 57.0))       # centre-line marker
+_addTag(ReferenceTag(95, 73.0, 73.0))        # corner marker
+_addTag(ReferenceTag(96, 515.0, 73.0))      # +X axis reference (105 cm from tag 95)
+_addTag(ReferenceTag(97, 516.0, 430.0))    # far-right corner
+_addTag(ReferenceTag(98, 102.0, 402.5))      # far-left corner
+_addTag(ReferenceTag(99, 254.0, 263.5))       # centre-line marker
