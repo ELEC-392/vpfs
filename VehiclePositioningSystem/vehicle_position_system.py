@@ -68,7 +68,7 @@ from utils import (
 # ---------------------------------------------------------------------------
 
 REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
-SMOOTHING_ALPHA   = 1.0   # EMA weight for the current measurement (0=frozen, 1=raw)
+SMOOTHING_ALPHA   = 0.4   # EMA weight for the current measurement (0=frozen, 1=raw)
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +216,15 @@ def main(argv: list[str] | None = None) -> None:
     ARUCO_PARAMS = (aruco.DetectorParameters()
                    if hasattr(aruco, "DetectorParameters")
                    else aruco.DetectorParameters_create())
+    # Subpixel corner refinement — critical for accurate pose at distance
+    ARUCO_PARAMS.cornerRefinementMethod = aruco.CORNER_REFINE_SUBPIX
+    ARUCO_PARAMS.cornerRefinementWinSize = 5
+    ARUCO_PARAMS.cornerRefinementMaxIterations = 30
+    ARUCO_PARAMS.cornerRefinementMinAccuracy = 0.01
+    # Wider adaptive threshold window handles mixed/challenging lighting
+    ARUCO_PARAMS.adaptiveThreshWinSizeMin = 3
+    ARUCO_PARAMS.adaptiveThreshWinSizeMax = 53
+    ARUCO_PARAMS.adaptiveThreshWinSizeStep = 10
     DETECTOR     = (aruco.ArucoDetector(ARUCO_DICT, ARUCO_PARAMS)
                    if hasattr(aruco, "ArucoDetector") else None)
 

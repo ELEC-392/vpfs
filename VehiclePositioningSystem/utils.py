@@ -573,6 +573,9 @@ def detect_aruco(
                 OBJ_POINTS, pts_u, CAM_K, None,
                 flags=cv2.SOLVEPNP_IPPE_SQUARE)
             if success:
+                # Refine with Levenberg-Marquardt to reduce noise at distance
+                rvec, tvec = cv2.solvePnPRefineLM(
+                    OBJ_POINTS, pts_u, CAM_K, None, rvec, tvec)
                 rvecs.append(rvec)
                 tvecs.append(tvec)
                 detections.append(ArucoDetection(
