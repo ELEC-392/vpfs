@@ -22,6 +22,7 @@ Usage::
     python vehicle_position_system.py --calib calib.json    # custom intrinsics
     python vehicle_position_system.py --vpfs                # publish to localhost
     python vehicle_position_system.py --vpfs http://host:5000
+    python vehicle_position_system.py --auto-exposure       # use camera autoexposure
 
 Reference Markers (from ref_tags.py):
     95 - corner marker (any world coordinate; NOT required to be origin)
@@ -96,8 +97,13 @@ def initialize_camera(camera_id: int, fps: int = 5) -> cv2.VideoCapture | None:
     v4l = _V4L2_CTL
     os.system(f"{v4l} -d {device} -c focus_automatic_continuous=0 2>/dev/null")
     os.system(f"{v4l} -d {device} -c focus_absolute=0            2>/dev/null")
-    os.system(f"{v4l} -d {device} -c auto_exposure=1             2>/dev/null")
-    os.system(f"{v4l} -d {device} -c exposure_time_absolute=200  2>/dev/null")
+    if auto_exposure:
+        # auto_exposure=3 → Aperture Priority (autoexposure) on UVC cameras
+        os.system(f"{v4l} -d {device} -c auto_exposure=3             2>/dev/null")
+    else:
+        # auto_exposure=1 → Manual mode
+        os.system(f"{v4l} -d {device} -c auto_exposure=1             2>/dev/null")
+        os.system(f"{v4l} -d {device} -c exposure_time_absolute=200  2>/dev/null")
     os.system(f"{v4l} -d {device} -c brightness=128              2>/dev/null")
 
     # CAP_PROP_BUFFERSIZE must come BEFORE open() so the kernel REQBUFS ioctl
@@ -124,8 +130,11 @@ def initialize_camera(camera_id: int, fps: int = 5) -> cv2.VideoCapture | None:
 
     cam.set(cv2.CAP_PROP_FPS,           fps)
     cam.set(cv2.CAP_PROP_AUTOFOCUS,     0)
-    cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-    cam.set(cv2.CAP_PROP_EXPOSURE,      185)
+    if auto_exposure:
+        cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)   # Aperture Priority (autoexposure)
+    else:
+        cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)   # Manual exposure mode
+        cam.set(cv2.CAP_PROP_EXPOSURE,      185)
 
     log_v4l2_state(device, label=f"cam{camera_id} fully configured")
 
@@ -182,6 +191,8 @@ def main(argv: list[str] | None = None) -> None:
         except (IndexError, ValueError):
             pass
 
+    auto_exposure: bool = "--auto-exposure" in argv
+
     vpfs_url: str | None = None
     if "--vpfs" in argv:
         idx = argv.index("--vpfs")
@@ -193,7 +204,7 @@ def main(argv: list[str] | None = None) -> None:
     log = setup_vps_logging()
     log.info("=== SINGLE-CAMERA VPS STARTING ===")
     log.info(f"  camera_id={camera_id}  hz={update_frequency_hz}  cam_fps={cam_fps}"
-             f"  display={show_display}  vpfs={vpfs_url}")
+             f"  display={show_display}  vpfs={vpfs_url}  auto_exposure={auto_exposure}")
 
     dump_dmesg_usb(label="startup")
 

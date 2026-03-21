@@ -16,6 +16,7 @@ Usage:
     python vehicle_position_system_multicam.py --hz 5             # 5 Hz update rate
     python vehicle_position_system_multicam.py --cam-fps 5        # camera capture FPS (default 5)
     python vehicle_position_system_multicam.py --calib <path>     # Custom intrinsics
+    python vehicle_position_system_multicam.py --auto-exposure    # Use camera autoexposure
 
 Reference Markers (known world positions in ref_tags.py):
     95 - corner marker (can be at any world coordinate, not required to be origin)
@@ -336,7 +337,8 @@ class CameraCapture:
                     log.warning(f"[{name}] Device {device} still absent after 30 s wait")
 
             new_cap = initialize_camera(cam_id, self._cam_info["K"], self._cam_info["D"],
-                                         fps=self._cam_info.get("fps", 5))
+                                         fps=self._cam_info.get("fps", 5),
+                                         auto_exposure=self._cam_info.get("auto_exposure", False))
             if new_cap is not None and new_cap.isOpened():
                 self._cap = new_cap
                 self._cam_info["cap"] = new_cap
@@ -433,17 +435,22 @@ def reset_xhci_controller(pci_addr: str | None = None) -> bool:
     return reset_attempted
 
 
-def initialize_camera(camera_id, CAM_K, CAM_D, fps: int = 5):
+def initialize_camera(camera_id, CAM_K, CAM_D, fps: int = 5, auto_exposure: bool = False):
     """Initialize a single camera with proper settings."""
     camera_device = Defaults.CAMERA_SYMLINKS[camera_id]
-    log.info(f"Initializing camera {camera_id} ({camera_device})...")
+    log.info(f"Initializing camera {camera_id} ({camera_device})  auto_exposure={auto_exposure}...")
 
     # Reset camera controls to known defaults (use resolved v4l2-ctl path)
     v4l = _V4L2_CTL
     os.system(f"{v4l} -d {camera_device} -c focus_automatic_continuous=0 2>/dev/null")
     os.system(f"{v4l} -d {camera_device} -c focus_absolute=0 2>/dev/null")
-    os.system(f"{v4l} -d {camera_device} -c auto_exposure=1 2>/dev/null")
-    os.system(f"{v4l} -d {camera_device} -c exposure_time_absolute=200 2>/dev/null")
+    if auto_exposure:
+        # auto_exposure=3 → Aperture Priority (autoexposure) on UVC cameras
+        os.system(f"{v4l} -d {camera_device} -c auto_exposure=3 2>/dev/null")
+    else:
+        # auto_exposure=1 → Manual mode
+        os.system(f"{v4l} -d {camera_device} -c auto_exposure=1 2>/dev/null")
+        os.system(f"{v4l} -d {camera_device} -c exposure_time_absolute=200 2>/dev/null")
     os.system(f"{v4l} -d {camera_device} -c brightness=128 2>/dev/null")
 
     # Create camera and set format.
@@ -480,8 +487,11 @@ def initialize_camera(camera_id, CAM_K, CAM_D, fps: int = 5):
 
     # Camera control settings (applied via OpenCV as backup)
     cam.set(cv2.CAP_PROP_AUTOFOCUS, 0)      # Disable autofocus
-    cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Manual exposure mode
-    cam.set(cv2.CAP_PROP_EXPOSURE, 185)     # Set exposure
+    if auto_exposure:
+        cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)  # Aperture Priority (autoexposure)
+    else:
+        cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Manual exposure mode
+        cam.set(cv2.CAP_PROP_EXPOSURE, 185)     # Set exposure
 
     max_fps = int(cam.get(cv2.CAP_PROP_FPS))
 
@@ -834,11 +844,13 @@ def main(argv=None):
     - --hz <frequency> : Update frequency in Hz (default: 10, recommended: 1-20)
     - --display : Show visual windows (default: headless)
     - --calib <path> : Path to camera intrinsics calibration file
+    - --auto-exposure : Enable camera autoexposure (default: manual)
     """
     # Parse command-line flags
     show_display = False
     update_frequency_hz = 5  # Default 5Hz update rate
     cam_fps = 5               # Default camera capture FPS
+    auto_exposure = False     # Default: manual exposure
 
     if argv:
         if '--display' in argv:
@@ -868,6 +880,10 @@ def main(argv=None):
                         cam_fps = 5
                 except ValueError:
                     cam_fps = 5
+
+        if '--auto-exposure' in argv:
+            auto_exposure = True
+            print("Autoexposure enabled")
 
         # Connect to VPFS backend if --vpfs flag is provided
         # Usage: --vpfs                  (connects to http://localhost:5000)
@@ -917,20 +933,21 @@ def main(argv=None):
             (in_fx, in_fy, in_cx, in_cy), CAM_D = resolve_camera_intrinsics(argv=argv, camera_id=cam_id)
             CAM_K = np.array([[in_fx, 0, in_cx], [0, in_fy, in_cy], [0, 0, 1]], dtype=np.float64)
             
-            cam = initialize_camera(cam_id, CAM_K, CAM_D, fps=cam_fps)
+            cam = initialize_camera(cam_id, CAM_K, CAM_D, fps=cam_fps, auto_exposure=auto_exposure)
             if cam is not None:
                 device_path = Defaults.CAMERA_SYMLINKS[cam_id]
                 pci_addr = get_pci_address_for_device(device_path)
                 log.info(f"  cam{cam_id} ({device_path}) → PCI controller: "
                          f"{pci_addr or 'unknown (check udevadm)'}")
                 cameras.append({
-                    "cap":      cam,
-                    "id":       cam_id,
-                    "name":     cam_name,
-                    "K":        CAM_K,
-                    "D":        CAM_D,
-                    "fps":      cam_fps,
-                    "pci_addr": pci_addr or "unknown",
+                    "cap":          cam,
+                    "id":           cam_id,
+                    "name":         cam_name,
+                    "K":            CAM_K,
+                    "D":            CAM_D,
+                    "fps":          cam_fps,
+                    "auto_exposure": auto_exposure,
+                    "pci_addr":     pci_addr or "unknown",
                 })
         except Exception as e:
             print(f"Failed to initialize camera {cam_id}: {e}")
