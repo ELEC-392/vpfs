@@ -317,46 +317,85 @@ def _fuse_map_to_cam(transforms: list[np.ndarray], weights: list[float]) -> np.n
     return T
 
 
-def compute_camera_pos(detections) -> ArrayLike | None:
+def compute_camera_pos(detections, cam_k: "np.ndarray | None" = None) -> "ArrayLike | None":
     """
-    Estimate the camera pose in map coordinates by fusing all matching detections.
+    Estimate the camera pose in map coordinates from visible reference tags.
 
-    For each detection whose tag_id exists in tags, compute:
-        cam_to_tag = det_to_transform_mat(det)
-        map_to_cam_i = (map_to_tag) * inv(cam_to_tag)
+    Two strategies, tried in order:
 
-    Then fuse all map_to_cam_i with a weighted average:
-    - Rotation: SVD-based averaging (nearest orthonormal matrix).
-    - Translation: weighted mean.
-    - Weights: inverse of tag distance (||pose_t||) by default.
+    1. Landmark PnP (preferred) — if cam_k is provided and ≥4 reference-tag
+       undistorted centres (det.center_u) are available, solves for camera pose
+       in ONE multi-point solvePnP call using the known world positions of tag
+       centres as 3-D landmarks and their pixel centres as 2-D correspondences.
+       This path does NOT use the map_to_tag rotation from ref_tags.py at all,
+       so it is insensitive to any error in that hardcoded orientation.
+
+    2. Weighted single-tag average (fallback) — each visible reference tag gives
+       one independent camera-pose estimate (via det_to_transform_mat + mat);
+       estimates are fused by weighted SVD rotation averaging.
 
     Args:
-        detections: Iterable of detections with tag_id, pose_R, pose_t.
+        detections: Iterable of ArucoDetection objects.
+        cam_k: (3×3) camera intrinsic matrix.  Required for strategy 1.
 
     Returns:
-        4x4 numpy array (map-to-camera transform), or None if no reference tag is found.
+        4×4 world-to-camera (map-to-camera) transform, or None if no reference
+        tag is visible.
     """
+    ref_dets = [det for det in detections if det.tag_id in tags]
+    if not ref_dets:
+        return None
+
+    # ------------------------------------------------------------------
+    # Strategy 1: multi-point landmark PnP (tag-orientation-free)
+    # ------------------------------------------------------------------
+    if cam_k is not None:
+        obj_pts: list = []
+        img_pts: list = []
+        for det in ref_dets:
+            if det.center_u is not None:
+                tag = tags[det.tag_id]
+                obj_pts.append([float(tag.x), float(tag.y), 0.0])
+                img_pts.append([float(det.center_u[0]), float(det.center_u[1])])
+
+        if len(obj_pts) >= 4:
+            try:
+                obj_arr = np.array(obj_pts, dtype=np.float64)
+                img_arr = np.array(img_pts, dtype=np.float64).reshape(-1, 1, 2)
+                # IPPE handles coplanar point sets and returns both solutions.
+                n_sol, rvecs_sol, tvecs_sol, _ = cv2.solvePnPGeneric(
+                    obj_arr, img_arr, cam_k, None,
+                    flags=cv2.SOLVEPNP_IPPE)
+                # Disambiguate: pick solution where camera is above ground (world Z > 0).
+                best_rv, best_tv = rvecs_sol[0], tvecs_sol[0]
+                for rv, tv in zip(rvecs_sol[:n_sol], tvecs_sol[:n_sol]):
+                    R_s, _ = cv2.Rodrigues(rv)
+                    if float((-R_s.T @ tv.flatten())[2]) > 0:
+                        best_rv, best_tv = rv, tv
+                        break
+                # Refine with Levenberg-Marquardt starting from the selected solution.
+                best_rv, best_tv = cv2.solvePnPRefineLM(
+                    obj_arr, img_arr, cam_k, None, best_rv, best_tv)
+                R_out, _ = cv2.Rodrigues(best_rv)
+                T = np.eye(4)
+                T[:3, :3] = R_out
+                T[:3,  3] = best_tv.flatten()
+                return T
+            except Exception:
+                pass  # fall through to strategy 2
+
+    # ------------------------------------------------------------------
+    # Strategy 2: weighted average of single-tag transform estimates
+    # ------------------------------------------------------------------
     candidates: list[np.ndarray] = []
     weights: list[float] = []
-
-    for det in detections:
-        if det.tag_id in tags:
-            # camera->tag (from the detector)
-            cam_to_tag = det_to_transform_mat(det)
-            # map->tag (from known field layout)
-            map_to_tag = tags[det.tag_id].mat
-            # Correct chain: p_tag = cam_to_tag @ map_to_cam @ p_world
-            #   → map_to_cam = inv(cam_to_tag) @ map_to_tag
-            map_to_cam_i = np.linalg.inv(cam_to_tag) @ map_to_tag
-            candidates.append(map_to_cam_i)
-
-            # Weight closer tags higher (you can swap to uniform weights = 1.0)
-            dist = float(np.linalg.norm(np.asarray(det.pose_t).reshape(-1)))
-            w = 1.0 / max(dist, 1e-3)
-            weights.append(w)
-
-    if not candidates:
-        return None
+    for det in ref_dets:
+        cam_to_tag = det_to_transform_mat(det)
+        map_to_tag = tags[det.tag_id].mat
+        map_to_cam_i = np.linalg.inv(cam_to_tag) @ map_to_tag
+        candidates.append(map_to_cam_i)
+        dist = float(np.linalg.norm(np.asarray(det.pose_t).reshape(-1)))
+        weights.append(1.0 / max(dist, 1e-3))
 
     return _fuse_map_to_cam(candidates, weights)
 

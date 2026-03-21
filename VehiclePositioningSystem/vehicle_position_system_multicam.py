@@ -558,7 +558,7 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     # Estimate camera pose from reference tags
     cameraPos = None
     try:
-        cameraPos = compute_camera_pos(detections)
+        cameraPos = compute_camera_pos(detections, CAM_K)
     except:
         pass
 
@@ -758,9 +758,10 @@ def compute_world_positions(detections_by_camera):
         if not detections:
             continue
 
-        # Estimate this camera's pose from visible reference markers
-        # map_to_cam: transforms a point in map frame into camera frame
-        map_to_cam = compute_camera_pos(detections)
+        # Estimate this camera's pose from visible reference markers.
+        # cam_k is carried inside each ArucoDetection — extract it once.
+        cam_k_det = next((d.cam_k for d in detections if d.cam_k is not None), None)
+        map_to_cam = compute_camera_pos(detections, cam_k_det)
         if map_to_cam is None:
             continue  # no reference markers visible on this camera this frame
 

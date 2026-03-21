@@ -285,7 +285,7 @@ def main(argv: list[str] | None = None) -> None:
                 frame, CAM_K, CAM_D, DETECTOR, ARUCO_DICT, ARUCO_PARAMS)
 
             # --- camera pose from reference tags -------------------------
-            camera_pos = compute_camera_pos(detections)
+            camera_pos = compute_camera_pos(detections, CAM_K)
 
             # --- mobile tag world positions (with temporal smoothing) ----
             all_marker_positions = {}
