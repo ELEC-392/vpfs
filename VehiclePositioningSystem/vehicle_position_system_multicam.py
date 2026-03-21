@@ -71,6 +71,7 @@ from utils import (
     _V4L2_CTL,
     OBJ_POINTS,
     detect_aruco,
+    solve_pnp_ippe,
     TerminalDashboard,
 )
 
@@ -536,15 +537,10 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
             # Undistort corner points only (shape: 1x4x2 -> 4x1x2 for undistortPoints)
             pts = corner.reshape(-1, 1, 2).astype(np.float32)
             pts_undistorted = cv2.undistortPoints(pts, CAM_K, CAM_D, P=CAM_K)
-            # solvePnP with original CAM_K and no distortion (points already corrected)
-            success, rvec, tvec = cv2.solvePnP(
-                OBJ_POINTS, pts_undistorted, CAM_K, None,
-                flags=cv2.SOLVEPNP_IPPE_SQUARE
-            )
+            # Disambiguate IPPE solutions using the physical constraint that
+            # the tag must be in front of the camera (tvec[2] > 0).
+            success, rvec, tvec = solve_pnp_ippe(OBJ_POINTS, pts_undistorted, CAM_K)
             if success:
-                # Refine with Levenberg-Marquardt to reduce noise at distance
-                rvec, tvec = cv2.solvePnPRefineLM(
-                    OBJ_POINTS, pts_undistorted, CAM_K, None, rvec, tvec)
                 rvecs.append(rvec)
                 tvecs.append(tvec)
 

@@ -58,6 +58,7 @@ from utils import (
     _V4L2_CTL,
     OBJ_POINTS,
     detect_aruco,
+    solve_pnp_ippe,
     CameraFrameBuffer,
     TerminalDashboard,
 )

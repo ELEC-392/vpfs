@@ -515,6 +515,60 @@ def log_v4l2_state(device: str, label: str = "") -> None:
         _log.warning(f"v4l2-ctl query failed for {device}{tag}: {exc}")
 
 
+def solve_pnp_ippe(obj_pts: np.ndarray, img_pts: np.ndarray, cam_k: np.ndarray):
+    """
+    Solve PnP using IPPE_SQUARE and resolve the two-solution ambiguity by
+    enforcing that the tag must be in front of the camera (tvec[2] > 0).
+
+    Background
+    ----------
+    IPPE_SQUARE always produces exactly two geometrically valid solutions.
+    When noise is high or the tag is far away both solutions have similar
+    reprojection errors, so the standard solvePnP call oscillates between
+    them frame-to-frame, producing the Z-axis flip observed in practice.
+
+    The disambiguation rule used here is physical: in any overhead-camera
+    setup the marker plane faces the camera, so the translation vector's Z
+    component (distance along the optical axis) must be positive.  This
+    single constraint uniquely selects the correct solution.
+
+    After disambiguation the selected solution is refined with
+    Levenberg-Marquardt to reduce remaining reprojection error.
+
+    Args:
+        obj_pts : (4, 3) float32 — 3-D object points (OBJ_POINTS).
+        img_pts : (4, 1, 2) float32 — undistorted image corner points.
+        cam_k   : (3, 3) float64 — camera intrinsic matrix.
+
+    Returns:
+        success (bool), rvec (3,1), tvec (3,1)
+        Returns (False, None, None) if solvePnPGeneric finds no solution.
+    """
+    n, rvecs_all, tvecs_all, _ = cv2.solvePnPGeneric(
+        obj_pts, img_pts, cam_k, None,
+        flags=cv2.SOLVEPNP_IPPE_SQUARE)
+
+    if n == 0:
+        return False, None, None
+
+    # Pick the solution where the tag is in front of the camera (tvec[2] > 0).
+    # solvePnPGeneric orders solutions by reprojection error (best first), so
+    # index 0 is the fallback when the physical constraint cannot distinguish.
+    chosen = 0
+    if n >= 2:
+        z0 = float(tvecs_all[0][2])
+        z1 = float(tvecs_all[1][2])
+        if z0 <= 0.0 and z1 > 0.0:
+            chosen = 1
+
+    rvec = rvecs_all[chosen]
+    tvec = tvecs_all[chosen]
+
+    # Refine with Levenberg-Marquardt starting from the disambiguated solution.
+    rvec, tvec = cv2.solvePnPRefineLM(obj_pts, img_pts, cam_k, None, rvec, tvec)
+    return True, rvec, tvec
+
+
 # Pre-computed marker corner geometry (shared by both VPS scripts).
 OBJ_POINTS = np.array([
     [-Defaults.TAG_SIZE / 2,  Defaults.TAG_SIZE / 2, 0],
@@ -569,13 +623,8 @@ def detect_aruco(
         for i, corner in enumerate(corners):
             pts = corner.reshape(-1, 1, 2).astype(np.float32)
             pts_u = cv2.undistortPoints(pts, CAM_K, CAM_D, P=CAM_K)
-            success, rvec, tvec = cv2.solvePnP(
-                OBJ_POINTS, pts_u, CAM_K, None,
-                flags=cv2.SOLVEPNP_IPPE_SQUARE)
+            success, rvec, tvec = solve_pnp_ippe(OBJ_POINTS, pts_u, CAM_K)
             if success:
-                # Refine with Levenberg-Marquardt to reduce noise at distance
-                rvec, tvec = cv2.solvePnPRefineLM(
-                    OBJ_POINTS, pts_u, CAM_K, None, rvec, tvec)
                 rvecs.append(rvec)
                 tvecs.append(tvec)
                 detections.append(ArucoDetection(
