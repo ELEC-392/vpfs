@@ -537,6 +537,20 @@ header h1 {
     animation: pulse 0.5s ease-in-out;
 }
 
+/* Duck is out of the VPS tracking area — greyed out at origin */
+.duck.duck-offline {
+    opacity: 0.2;
+    filter: grayscale(100%) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.15));
+    transition: opacity 0.4s;
+    pointer-events: auto;
+}
+
+.duck.duck-offline:hover {
+    transform: translate(-50%, -50%) scale(1.2);
+    filter: grayscale(60%) drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+    opacity: 0.5;
+}
+
 /* Match Countdown Widget */
 .countdown-widget {
     background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);

@@ -27,6 +27,11 @@ class MapMonitor {
         this.matchDuration = 0;
         this.matchRunning  = false;
 
+        // Staleness tracking: teamId -> ms timestamp of last position_update received.
+        // Ducks not updated within STALE_MS are moved to origin and greyed out.
+        this.lastSeen  = {};
+        this.STALE_MS  = 3000;
+
         // Fare type mapping (enum value to name)
         this.fareTypeMap = {
             0: 'STANDARD',
@@ -67,6 +72,7 @@ class MapMonitor {
         this.countdownInterval = setInterval(() => {
             this.updateFareCountdowns();
             this.updateMatchCountdown();
+            this.checkStaleDucks();
         }, 1000);
         
         // Initial fetch of fares and team data
@@ -614,6 +620,9 @@ class MapMonitor {
 
             ducksLayer.appendChild(duckElement);
             this.duckElements[team.id] = duckElement;
+            // Give each duck a fresh grace window so newly-created elements
+            // don't get instantly marked stale before the first VPS frame arrives.
+            this.lastSeen[team.id] = Date.now();
         });
     }
 
@@ -648,6 +657,15 @@ class MapMonitor {
     }
 
     updatePosition(teamId, x, y) {
+        // Mark this duck as actively seen
+        this.lastSeen[teamId] = Date.now();
+
+        // If the duck was previously marked offline, bring it back
+        const duckEl = this.duckElements[teamId];
+        if (duckEl && duckEl.classList.contains('duck-offline')) {
+            duckEl.classList.remove('duck-offline');
+        }
+
         // Update internal state
         this.positions[teamId] = { x, y };
 
@@ -659,6 +677,36 @@ class MapMonitor {
 
         // Update last update time
         this.updateLastUpdateTime();
+    }
+
+    resetDuck(teamId) {
+        const duckElement = this.duckElements[teamId];
+        if (!duckElement || duckElement.classList.contains('duck-offline')) return;
+
+        // Teleport instantly to origin — no 0.8 s slide across the map
+        duckElement.style.transition = 'none';
+        const xOrigin = (this.X_SHIFT_CM / this.MAP_WIDTH_CM)  * 100;
+        const yOrigin = (1 - this.Y_SHIFT_CM / this.MAP_HEIGHT_CM) * 100;
+        duckElement.style.left = `${xOrigin.toFixed(3)}%`;
+        duckElement.style.top  = `${yOrigin.toFixed(3)}%`;
+        duckElement.classList.add('duck-offline');
+        // Restore the normal position transition after the teleport so the next
+        // real update will animate smoothly
+        requestAnimationFrame(() => { duckElement.style.transition = ''; });
+
+        // Update legend to show out-of-area
+        const coordsElement = document.getElementById(`coords-${teamId}`);
+        if (coordsElement) coordsElement.textContent = 'out of area';
+    }
+
+    checkStaleDucks() {
+        const now = Date.now();
+        this.teams.forEach(team => {
+            const last = this.lastSeen[team.id] || 0;
+            if (last > 0 && (now - last) > this.STALE_MS) {
+                this.resetDuck(team.id);
+            }
+        });
     }
 
     updateLegendCoordinates(teamId, x, y) {
