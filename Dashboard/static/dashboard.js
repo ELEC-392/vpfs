@@ -285,6 +285,13 @@ class MapMonitor {
             const fare = this.fares.find(f => f.id === fareIdx);
             
             if (!fare || !fare.src || !fare.dest) continue;
+
+            // Hide the route line when the duck has left the map AND the fare has expired
+            const _teamId = parseInt(teamNum);
+            const _duckEl = this.duckElements[_teamId];
+            const _duckOffline = _duckEl && _duckEl.classList.contains('duck-offline');
+            const _fareExpired = fare.expiry && fare.expiry < (Date.now() / 1000);
+            if (_duckOffline && _fareExpired) continue;
             
             console.log(`Team ${teamNum} has fare ${fareIdx}:`, fare);
             
