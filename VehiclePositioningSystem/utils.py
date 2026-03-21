@@ -52,7 +52,15 @@ class Defaults:
 
 # Adapter to match utils.compute_camera_pos expected detection interface
 class ArucoDetection:
-    def __init__(self, tag_id: int, rvec: np.ndarray, tvec: np.ndarray, corners: np.ndarray):
+    def __init__(
+        self,
+        tag_id: int,
+        rvec: np.ndarray,
+        tvec: np.ndarray,
+        corners: np.ndarray,
+        center_u: "np.ndarray | None" = None,
+        cam_k: "np.ndarray | None" = None,
+    ):
         # OpenCV gives tag->camera (object->camera) pose. Convert to camera->tag.
         R_tc, _ = cv2.Rodrigues(rvec.reshape(3, 1))   # (3x3)
         t_tc = tvec.reshape(3, 1)                     # (3x1)
@@ -64,6 +72,10 @@ class ArucoDetection:
         self.pose_t = t_ct
         self.corners = corners.reshape(-1, 2)
         self.center = self.corners.mean(axis=0)
+        # Undistorted pixel centre of the tag (mean of 4 undistorted corners).
+        # Used by _ray_ground_pos for stable ground-plane position estimation.
+        self.center_u: "np.ndarray | None" = center_u
+        self.cam_k:    "np.ndarray | None" = cam_k
 
 
 def parse_calib_path(argv: list[str]) -> str | None:
@@ -349,6 +361,62 @@ def compute_camera_pos(detections) -> ArrayLike | None:
     return _fuse_map_to_cam(candidates, weights)
 
 
+def _ray_ground_pos(
+    center_u: np.ndarray,
+    cam_k: np.ndarray,
+    map_to_cam: np.ndarray,
+) -> "tuple[float, float] | None":
+    """
+    Find the world (x, y) position of a ground-plane tag by casting a ray from
+    the camera through the undistorted pixel centre of the detection and
+    intersecting it with the z = 0 plane.
+
+    Why this is more stable than the PnP-derived translation
+    ---------------------------------------------------------
+    solvePnP estimates position by recovering rotation AND translation from
+    four noisy corner coordinates.  Even with the IPPE flip resolved, small
+    rotational errors propagate into large x/y errors — especially at distance.
+
+    The tag centre pixel (mean of four corners) is significantly more stable
+    than any individual corner.  Given the known camera pose (from reference
+    markers) and the physical constraint that the tag lies on z = 0, we can
+    project that single stable pixel onto the ground plane directly, bypassing
+    the noisy depth estimation of PnP entirely.
+
+    Args:
+        center_u  : (2,) undistorted tag centre in pixel coordinates.
+        cam_k     : (3,3) camera intrinsic matrix (same K used in detection).
+        map_to_cam: (4,4) map-to-camera transform from compute_camera_pos.
+
+    Returns:
+        (world_x, world_y) in cm, or None if the ray is nearly parallel to
+        the ground plane or the intersection is behind the camera.
+    """
+    u, v = float(center_u[0]), float(center_u[1])
+    fx, fy = float(cam_k[0, 0]), float(cam_k[1, 1])
+    cx, cy = float(cam_k[0, 2]), float(cam_k[1, 2])
+
+    # Normalised ray direction in camera space (through pixel centre)
+    d_cam = np.array([(u - cx) / fx, (v - cy) / fy, 1.0])
+
+    R = map_to_cam[:3, :3]   # world-to-camera rotation
+    t = map_to_cam[:3, 3]    # world-to-camera translation
+
+    cam_world = -R.T @ t          # camera centre in world coordinates
+    d_world   = R.T @ d_cam       # ray direction in world coordinates
+
+    # Intersect with z = 0:  cam_world[2] + s * d_world[2] = 0
+    dz = float(d_world[2])
+    if abs(dz) < 1e-6:
+        return None   # ray nearly parallel to the ground plane
+    s = -float(cam_world[2]) / dz
+    if s < 0:
+        return None   # intersection is behind the camera
+
+    p = cam_world + s * d_world
+    return float(p[0]), float(p[1])
+
+
 def compute_tag_poses(detections, cam_pos: ArrayLike) -> Dict[int, Tuple[int, int, int]]:
     """
     Compute tag positions in the map frame given the camera pose.
@@ -374,13 +442,23 @@ def compute_tag_poses(detections, cam_pos: ArrayLike) -> Dict[int, Tuple[int, in
         cam_to_tag = det_to_transform_mat(det)
         # map->tag: correct order is cam_to_tag @ map_to_cam
         map_to_tag = cam_to_tag @ cam_pos
-        # Tag origin in world = -R^T @ t
         R = map_to_tag[:3, :3]
         t = map_to_tag[:3, 3]
-        pos = -R.T @ t
         # Heading: angle of tag X axis w.r.t. world X axis.
         # R transforms world->tag, so tag X in world = first row of R.
         heading = float(np.arctan2(R[0, 1], R[0, 0]))
+
+        # Position: use ray-plane intersection when undistorted centre and K
+        # are stored in the detection.  This avoids deriving x/y from the
+        # noisy PnP rotation and uses the stable averaged pixel centre instead.
+        if det.center_u is not None and det.cam_k is not None:
+            xy = _ray_ground_pos(det.center_u, det.cam_k, cam_pos)
+            if xy is not None:
+                tag_poses[det.tag_id] = (xy[0], xy[1], 0.0, heading)
+                continue
+
+        # Fallback: PnP-derived position (used when cam_k is not stored).
+        pos = -R.T @ t
         tag_poses[det.tag_id] = (float(pos[0]), float(pos[1]), float(pos[2]), heading)
 
     return tag_poses
@@ -631,7 +709,9 @@ def detect_aruco(
                     tag_id=int(ids[i][0]),
                     rvec=rvec.reshape(3),
                     tvec=tvec.reshape(3),
-                    corners=corner))
+                    corners=corner,
+                    center_u=pts_u.reshape(-1, 2).mean(axis=0),
+                    cam_k=CAM_K))
 
     return detections, rvecs, tvecs, corners, ids
 

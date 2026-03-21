@@ -72,6 +72,7 @@ from utils import (
     OBJ_POINTS,
     detect_aruco,
     solve_pnp_ippe,
+    _ray_ground_pos,
     TerminalDashboard,
 )
 
@@ -533,7 +534,7 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
     if ids is not None and len(ids) > 0:
         rvecs = []
         tvecs = []
-        for corner in corners:
+        for i, corner in enumerate(corners):
             # Undistort corner points only (shape: 1x4x2 -> 4x1x2 for undistortPoints)
             pts = corner.reshape(-1, 1, 2).astype(np.float32)
             pts_undistorted = cv2.undistortPoints(pts, CAM_K, CAM_D, P=CAM_K)
@@ -543,16 +544,16 @@ def process_camera_frame(frame, camera_id, camera_name, CAM_K, CAM_D, DETECTOR, 
             if success:
                 rvecs.append(rvec)
                 tvecs.append(tvec)
-
-        for i, tag_id in enumerate(ids.flatten()):
-            detections.append(
-                ArucoDetection(
-                    tag_id=tag_id,
-                    rvec=rvecs[i].reshape(3),
-                    tvec=tvecs[i].reshape(3),
-                    corners=corners[i]
+                detections.append(
+                    ArucoDetection(
+                        tag_id=int(ids[i][0]),
+                        rvec=rvec.reshape(3),
+                        tvec=tvec.reshape(3),
+                        corners=corner,
+                        center_u=pts_undistorted.reshape(-1, 2).mean(axis=0),
+                        cam_k=CAM_K,
+                    )
                 )
-            )
 
     # Estimate camera pose from reference tags
     cameraPos = None
@@ -764,19 +765,22 @@ def compute_world_positions(detections_by_camera):
             continue  # no reference markers visible on this camera this frame
 
         for det in detections:
-            # cam_to_tag: transforms a point in camera frame into tag frame
             cam_to_tag = det_to_transform_mat(det)
-            # Correct chain: p_tag = cam_to_tag @ map_to_cam @ p_world
-            #   so map_to_tag = cam_to_tag @ map_to_cam
-            # Tag origin in world = inv(map_to_tag)[:3,3] = -R.T @ t
             map_to_tag = cam_to_tag @ map_to_cam
             R = map_to_tag[:3, :3]
             t = map_to_tag[:3, 3]
-            tag_pos_world = -R.T @ t   # tag origin in map/world coordinates
-            # Heading: angle of tag X axis projected to world XY plane.
-            # R transforms world->tag, so tag X in world = first row of R.
             heading = float(np.arctan2(R[0, 1], R[0, 0]))
 
+            # Use ray-plane intersection for position when available.
+            if det.center_u is not None and det.cam_k is not None:
+                xy = _ray_ground_pos(det.center_u, det.cam_k, map_to_cam)
+                if xy is not None:
+                    all_observations.setdefault(int(det.tag_id), []).append(
+                        (xy[0], xy[1], 0.0, heading))
+                    continue
+
+            # Fallback: PnP-derived position.
+            tag_pos_world = -R.T @ t
             all_observations.setdefault(int(det.tag_id), []).append(
                 (tag_pos_world[0], tag_pos_world[1], tag_pos_world[2], heading)
             )
