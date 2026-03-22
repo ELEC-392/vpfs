@@ -70,7 +70,7 @@ for point in points:
 teams: dict[int, Team] = {}
 
 # Desired number of concurrently active fares displayed/managed by the system.
-TARGET_FARES = 8
+TARGET_FARES = 99
 
 # How long (seconds) a team can go without a position update before any fare
 # they hold is automatically force-dropped.  This unblocks do_generation() when

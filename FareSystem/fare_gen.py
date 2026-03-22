@@ -94,11 +94,11 @@ for cfg in spawn_points_config.values():
     points.append(SpawnPoint(cfg["point"], cfg["biases"]))
 
 # Minimum and maximum allowed distance between spawn points (in centimetres)
-DIST_MIN = 50
+DIST_MIN = 200
 DIST_MAX = 999
 
 # TODO: Find a way to link this to the one in FMS.py without a circular import
-TARGET_FARES = 8
+TARGET_FARES = 99
 
 targetProbabilities = get_target_distribution()
 
