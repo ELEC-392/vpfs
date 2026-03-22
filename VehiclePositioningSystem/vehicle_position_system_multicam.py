@@ -1136,7 +1136,7 @@ def main(argv=None):
         raw_marker_positions = compute_world_positions(all_detections_by_camera)
 
         # Apply temporal smoothing to reduce jitter/fluctuations
-        REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
+        REFERENCE_TAG_IDS = set(ref_tags.keys())  # derived from ref_tags.py — no manual update needed
         all_marker_positions = {}
         for tag_id, (x, y, z, heading) in raw_marker_positions.items():
             if tag_id in smoothed_positions:

@@ -69,7 +69,7 @@ from utils import (
 # Constants
 # ---------------------------------------------------------------------------
 
-REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
+REFERENCE_TAG_IDS = set(ref_tags.keys())  # derived from ref_tags.py — no manual update needed
 SMOOTHING_ALPHA   = 0.4   # EMA weight for the current measurement (0=frozen, 1=raw)
 
 
@@ -77,7 +77,7 @@ SMOOTHING_ALPHA   = 0.4   # EMA weight for the current measurement (0=frozen, 1=
 # Camera initialisation
 # ---------------------------------------------------------------------------
 
-def initialize_camera(camera_id: int, fps: int = 5) -> cv2.VideoCapture | None:
+def initialize_camera(camera_id: int, fps: int = 5, auto_exposure: bool = False) -> cv2.VideoCapture | None:
     """
     Open camera *camera_id* with the correct V4L2 settings for an ArUco pipeline.
 
