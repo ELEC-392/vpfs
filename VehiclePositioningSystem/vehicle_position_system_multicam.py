@@ -4,7 +4,7 @@ Multi-Camera Vehicle Positioning System (VPS) runtime (ArUco-based).
 - Opens three cameras.
 - Detects ArUco markers (DICT_6X6_100) from all cameras.
 - Each camera independently computes its world pose from any reference markers
-  it sees (IDs 95-99), whose world positions are hardcoded in ref_tags.py.
+  it sees (IDs defined in ref_tags.py), whose world positions are loaded dynamically.
 - Mobile-tag world positions from all cameras are averaged together.
 - Applies temporal smoothing to reduce position jitter.
 - Sends tag pose updates to the VPFS backend via vpfs_connector.
@@ -19,16 +19,10 @@ Usage:
     python vehicle_position_system_multicam.py --auto-exposure    # Use camera autoexposure
 
 Reference Markers (known world positions in ref_tags.py):
-    95 - corner marker (can be at any world coordinate, not required to be origin)
-    96 - +X axis reference (defines the orientation of the X axis relative to tag 95)
-    97 - far-right corner
-    98 - far-left corner
-    99 - centre-line marker
-
-Set coordinates in ref_tags.py to the measured physical positions from your
-chosen origin. Tag 95 does not have to be at (0, 0). Place all reference
-markers flat, oriented the same way.
-The more reference markers visible to a camera, the more stable its pose estimate.
+    All tag IDs and world positions are defined in ref_tags.py and loaded
+    automatically at startup. Add or remove tags there; no changes needed here.
+    Place all reference markers flat, oriented the same way.
+    The more reference markers visible to a camera, the more stable its pose estimate.
 
 Performance:
 - Terminal shows FPS and marker positions in centimetres.
@@ -641,7 +635,7 @@ def fuse_tag_poses_from_cameras(detections_by_camera):
     Fuse tag detections from multiple cameras to compute world/map poses.
     
     Workflow:
-    1. For each camera, compute camera pose using reference tags (95-99)
+    1. For each camera, compute camera pose using reference tags (from ref_tags.py)
     2. Transform all detected tags (reference + mobile) to world coordinates
     3. Fuse multiple observations of the same tag across cameras by weighted averaging
     
@@ -749,7 +743,7 @@ def compute_world_positions(detections_by_camera):
 
     For each camera:
       1. Call compute_camera_pos() to estimate map->camera transform from any
-         reference markers (IDs 95-99) visible in that camera's frame.
+         reference markers (IDs from ref_tags.py) visible in that camera's frame.
       2. Call compute_tag_poses() to project ALL detected markers into world space.
     Then average world positions for tags seen by multiple cameras.
 

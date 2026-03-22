@@ -4,8 +4,8 @@ Single-Camera Vehicle Positioning System (VPS) runtime (ArUco-based).
 - Opens one camera (V4L2 / Logitech Brio 4K).
 - Detects ArUco markers (DICT_6X6_100) in a background-drained thread so the
   V4L2 kernel buffer never fills up regardless of main-loop frequency.
-- Estimates camera pose from known reference tags (IDs 95-99, world positions
-  in ref_tags.py) using utils.compute_camera_pos.
+- Estimates camera pose from known reference tags (IDs defined in ref_tags.py,
+  world positions loaded dynamically) using utils.compute_camera_pos.
 - Transforms detected mobile tags into world/map coordinates.
 - Applies temporal smoothing to reduce position jitter.
 - Sends tag pose updates to the VPFS backend via vpfs_connector.
@@ -25,14 +25,9 @@ Usage::
     python vehicle_position_system.py --auto-exposure       # use camera autoexposure
 
 Reference Markers (from ref_tags.py):
-    95 - corner marker (any world coordinate; NOT required to be origin)
-    96 - +X axis reference
-    97 - far-right corner
-    98 - far-left corner
-    99 - centre-line marker
-
-Set all coordinates as measured physical positions from your chosen origin.
-The more reference markers visible, the more stable the pose estimate.
+    All tag IDs and world positions are defined in ref_tags.py and loaded
+    automatically at startup — no changes needed here when tags are added.
+    The more reference markers visible, the more stable the pose estimate.
 """
 
 import os

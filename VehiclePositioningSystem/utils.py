@@ -863,7 +863,7 @@ class TerminalDashboard:
             is_alive          bool
             consecutive_errors int
         """
-        REFERENCE_TAG_IDS = {95, 96, 97, 98, 99}
+        REFERENCE_TAG_IDS = {85,86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99}
         W = 72
         now      = time.time()
         uptime_s = int(now - start_time)
@@ -914,7 +914,7 @@ class TerminalDashboard:
                 lines.append(f"    #{tid:2d}  X={x:7.1f} cm   Y={y:7.1f} cm   "
                              f"dist={np.sqrt(x**2+y**2):6.1f} cm")
         else:
-            lines.append(f"    {Y}(none visible \u2014 need at least one of 95-99){R}")
+            lines.append(f"    {Y}(none visible \u2014 need at least one of 85-99){R}")
 
         lines.append(f"  {B}Mobile markers:{R}")
         if mobile_markers:
