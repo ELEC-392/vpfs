@@ -72,6 +72,13 @@ teams: dict[int, Team] = {}
 # Desired number of concurrently active fares displayed/managed by the system.
 TARGET_FARES = 8
 
+# How long (seconds) a team can go without a position update before any fare
+# they hold is automatically force-dropped.  This unblocks do_generation() when
+# a vehicle leaves the arena without explicitly dropping its fare.
+# Must be comfortably longer than normal VPS jitter (VPS publishes at 5 Hz;
+# dashboard uses 3 s — we give 15 s to tolerate brief network gaps).
+TEAM_ABSENT_TIMEOUT: float = 15.0
+
 # Cooldown timestamp used to stagger fare generation (prevents bursts).
 genCooldown = 0
 
@@ -126,6 +133,25 @@ def periodic():
                     # Release the lock so pause_match() can acquire it
                     pass  # handled below
                 else:
+                    # Auto-drop fares held by teams that have left the arena.
+                    # A team is considered absent when its lastPosUpdate is older
+                    # than TEAM_ABSENT_TIMEOUT *and* it was seen at least once
+                    # (lastPosUpdate > 0 — avoids evicting newly-registered teams
+                    # that haven't published their first position yet).
+                    now = time.time()
+                    for team in teams.values():
+                        if team.currentFare is None:
+                            continue
+                        if team.lastPosUpdate <= 0:
+                            continue
+                        if now - team.lastPosUpdate > TEAM_ABSENT_TIMEOUT:
+                            fare_idx = team.currentFare
+                            if fare_idx < len(fares):
+                                fares[fare_idx].drop_fare(fare_idx, team)
+                                print(f"[FMS] Team {team.number} absent for "
+                                      f"{now - team.lastPosUpdate:.0f}s — "
+                                      f"force-dropped fare {fare_idx}")
+
                     # Update fare statuses
                     for idx, fare in enumerate(fares):
                         fare.periodic(idx, teams)
