@@ -15,13 +15,13 @@ class MapMonitor {
         this.countdownInterval = null;
         
         // Physical map dimensions in centimetres (tune as needed)
-        this.MAP_WIDTH_CM  = 609.6;
-        this.MAP_HEIGHT_CM = 487.7;
+        this.MAP_WIDTH_CM  = 609.0;
+        this.MAP_HEIGHT_CM = 488.0;
 
         // Rendering offset in centimetres applied to duck and fare-line positions.
         // Increase X_SHIFT_CM to shift right, Y_SHIFT_CM to shift up.
-        this.X_SHIFT_CM = 0.5;
-        this.Y_SHIFT_CM = 10.0;
+        this.X_SHIFT_CM = 0.0;
+        this.Y_SHIFT_CM = 11.0;
 
         this.matchEndTime  = 0;
         this.matchDuration = 0;

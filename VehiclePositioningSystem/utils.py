@@ -52,7 +52,7 @@ class Defaults:
     # All mobile tags are assumed to be at the same height.
     # Used to correct parallax when projecting the pixel centre onto the tag plane.
     # Set this to the actual measured height of your tags above the floor.
-    MOBILE_TAG_HEIGHT = 13.0  # cm  <-- adjust to match your robot tag height
+    MOBILE_TAG_HEIGHT = 15.0  # cm  <-- adjust to match your robot tag height
 
 
 # Adapter to match utils.compute_camera_pos expected detection interface
