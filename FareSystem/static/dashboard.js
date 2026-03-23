@@ -5,6 +5,10 @@ const LAB_OP = "Lab";
 const HOME_OP = "Home";
 const MATCH_OP = "Match";
 
+// Tracks fare IDs already seen as paid — used to fire confetti only on new completions.
+const _paidFares = new Set();
+let _faresInitialized = false;
+
 function setVisibility(element, visible){
     if(!visible)
         element.style.display = "none"
@@ -100,6 +104,69 @@ async function updateFares(){
         setVisibility(document.getElementById(`fare-${id}-completed`), !!fare.completed);
         setVisibility(document.getElementById(`fare-${id}-paid`), !!fare.paid);
         setVisibility(document.getElementById(`fare-${id}-modifier`), (fare.modifiers || 0) !== 0);
+
+        // Confetti: trigger only when a fare transitions to paid for the first time.
+        if (fare.paid && !_paidFares.has(id)) {
+            if (_faresInitialized && fare.team != null) {
+                triggerConfetti(fare.team);
+            }
+            _paidFares.add(id);
+        }
+    }
+    _faresInitialized = true;
+}
+
+function triggerConfetti(teamNumber) {
+    const card = document.getElementById(`team-${teamNumber}`);
+    if (!card) return;
+
+    // Flash the card
+    card.classList.remove('fare-completed-flash');
+    // Force reflow so re-adding the class always restarts the animation
+    void card.offsetWidth;
+    card.classList.add('fare-completed-flash');
+    card.addEventListener('animationend', () => card.classList.remove('fare-completed-flash'), { once: true });
+
+    // Confetti burst
+    const rect = card.getBoundingClientRect();
+    const originX = rect.left + rect.width  / 2;
+    const originY = rect.top  + rect.height / 2;
+
+    const colors = ['#f59e0b', '#10b981', '#3b82f6', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
+    const PIECES = 45;
+
+    for (let i = 0; i < PIECES; i++) {
+        const piece = document.createElement('div');
+        piece.className = 'confetti-piece';
+
+        // Random trajectory
+        const angle    = Math.random() * 2 * Math.PI;
+        const dist     = 70 + Math.random() * 130;
+        const dx       = (Math.cos(angle) * dist).toFixed(1);
+        const dy       = (Math.sin(angle) * dist - 60).toFixed(1);  // bias upward
+        const rot      = ((Math.random() - 0.5) * 720).toFixed(0);
+        const dur      = (0.7 + Math.random() * 0.6).toFixed(2);
+        const delay    = (Math.random() * 0.15).toFixed(2);
+        const size     = (6 + Math.random() * 6).toFixed(1);
+        const color    = colors[Math.floor(Math.random() * colors.length)];
+        const isCircle = Math.random() > 0.5;
+
+        piece.style.cssText = [
+            `left:${originX}px`,
+            `top:${originY}px`,
+            `width:${size}px`,
+            `height:${isCircle ? size : (parseFloat(size) * 1.4).toFixed(1)}px`,
+            `background-color:${color}`,
+            `border-radius:${isCircle ? '50%' : '2px'}`,
+            `--dx:${dx}px`,
+            `--dy:${dy}px`,
+            `--rot:${rot}deg`,
+            `--dur:${dur}s`,
+            `--delay:${delay}s`,
+        ].join(';');
+
+        document.body.appendChild(piece);
+        piece.addEventListener('animationend', () => piece.remove(), { once: true });
     }
 }
 
