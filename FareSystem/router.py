@@ -1021,6 +1021,25 @@ def set_fare_lines_setting():
     _fare_lines_visible = bool(data.get("visible", True))
     return jsonify({"success": True, "visible": _fare_lines_visible})
 
+@app.route("/api/admin/spawn-points")
+@require_admin
+def api_admin_spawn_points():
+    """Return all spawn points from spawn_points.yaml for admin visualization."""
+    config_path = Path(__file__).resolve().parents[1] / "Config" / "spawn_points.yaml"
+    with config_path.open("r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    points = []
+    for sp in data.get("spawn_points", []):
+        coords = sp.get("coordinates", {})
+        points.append({
+            "id":     sp.get("id"),
+            "name":   sp.get("name", "?"),
+            "x":      float(coords.get("x", 0)),
+            "y":      float(coords.get("y", 0)),
+            "active": bool(sp.get("active", True)),
+        })
+    return jsonify({"success": True, "spawnPoints": points})
+
 @app.route("/api/admin/match/reset", methods=["POST"])
 @require_admin
 def admin_reset_match():

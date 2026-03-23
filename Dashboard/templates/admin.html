@@ -126,6 +126,29 @@
                         </div>
                     </div>
 
+                    <!-- Spawn Points Toggle -->
+                    <div class="auto-register-toggle" style="margin-top:16px;">
+                        <div class="toggle-row">
+                            <div>
+                                <div class="toggle-title">Show spawn points</div>
+                                <div class="toggle-hint">Visualize all spawn point positions and map dimensions.</div>
+                            </div>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="spawn-points-toggle">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Spawn Points Visualization -->
+                    <div id="spawn-points-panel" class="spawn-points-panel" style="display:none;">
+                        <div class="spawn-points-info" id="spawn-points-info"></div>
+                        <div class="spawn-canvas-wrap">
+                            <canvas id="spawn-points-canvas"></canvas>
+                            <div class="spawn-tooltip" id="spawn-tooltip"></div>
+                        </div>
+                    </div>
+
                     <div class="match-state-display">
                         <div class="stat-item">
                             <span>Match:</span>

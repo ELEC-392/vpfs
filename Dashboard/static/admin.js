@@ -97,6 +97,24 @@ class AdminPanel {
         document.getElementById('fare-lines-toggle').addEventListener('change', (e) => {
             this.setFareLinesVisible(e.target.checked);
         });
+
+        // Spawn points toggle
+        document.getElementById('spawn-points-toggle').addEventListener('change', (e) => {
+            const panel = document.getElementById('spawn-points-panel');
+            if (e.target.checked) {
+                panel.style.display = '';
+                this.renderSpawnPoints();
+            } else {
+                panel.style.display = 'none';
+            }
+        });
+
+        // Spawn points canvas tooltip
+        const spawnCanvas = document.getElementById('spawn-points-canvas');
+        spawnCanvas.addEventListener('mousemove', (e) => this._spawnCanvasMouseMove(e));
+        spawnCanvas.addEventListener('mouseleave', () => {
+            document.getElementById('spawn-tooltip').style.display = 'none';
+        });
     }
 
     setTeamCount(count) {
@@ -470,6 +488,169 @@ class AdminPanel {
             console.error('Error setting fare lines visibility:', error);
             this.showMatchStatus('Network error', 'error');
             document.getElementById('fare-lines-toggle').checked = !visible;
+        }
+    }
+
+    async renderSpawnPoints() {
+        const infoEl  = document.getElementById('spawn-points-info');
+        const canvas  = document.getElementById('spawn-points-canvas');
+        try {
+            const response = await fetch('/api/admin/spawn-points');
+            if (!response.ok) { infoEl.textContent = 'Failed to load spawn points.'; return; }
+            const data   = await response.json();
+            const points = data.spawnPoints || [];
+            if (!points.length) { infoEl.textContent = 'No spawn points found.'; return; }
+
+            const active   = points.filter(p => p.active).length;
+            const inactive = points.length - active;
+            const xs = points.map(p => p.x);
+            const ys = points.map(p => p.y);
+            const minX = Math.min(...xs), maxX = Math.max(...xs);
+            const minY = Math.min(...ys), maxY = Math.max(...ys);
+            infoEl.textContent =
+                `${active} active${inactive ? ` · ${inactive} inactive` : ''}`
+                + `  ·  X: ${minX}–${maxX} cm  ·  Y: ${minY}–${maxY} cm`
+                + `  ·  Span: ${(maxX - minX).toFixed(0)} × ${(maxY - minY).toFixed(0)} cm`;
+
+            this._drawSpawnCanvas(canvas, points);
+        } catch (err) {
+            console.error('Error rendering spawn points:', err);
+            infoEl.textContent = 'Error loading spawn points.';
+        }
+    }
+
+    _drawSpawnCanvas(canvas, points) {
+        const PAD       = 52;   // pixels — space for axis labels
+        const GRID_STEP = 100;  // cm between grid lines
+        const POINT_R   = 7;    // spawn point radius in px
+
+        const wrap = canvas.parentElement;
+        const W    = wrap.clientWidth || 600;
+
+        const xs = points.map(p => p.x);
+        const ys = points.map(p => p.y);
+
+        // Snap data extents outward to nearest GRID_STEP
+        const dataMinX = Math.floor(Math.min(...xs) / GRID_STEP) * GRID_STEP;
+        const dataMaxX = Math.ceil( Math.max(...xs) / GRID_STEP) * GRID_STEP;
+        const dataMinY = Math.floor(Math.min(...ys) / GRID_STEP) * GRID_STEP;
+        const dataMaxY = Math.ceil( Math.max(...ys) / GRID_STEP) * GRID_STEP;
+
+        const rangeX  = dataMaxX - dataMinX;
+        const rangeY  = dataMaxY - dataMinY;
+        const innerW  = W - 2 * PAD;
+        const scale   = innerW / rangeX;   // one scale for both axes (square grid)
+        const innerH  = rangeY * scale;
+        const H       = innerH + 2 * PAD;
+
+        canvas.width  = W;
+        canvas.height = H;
+
+        const toX = x => PAD + (x - dataMinX) * scale;
+        const toY = y => PAD + (y - dataMinY) * scale;
+
+        const ctx = canvas.getContext('2d');
+
+        // Background
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillRect(0, 0, W, H);
+
+        // Grid + axis tick labels
+        ctx.strokeStyle = '#e2e8f0';
+        ctx.lineWidth   = 1;
+        ctx.fillStyle   = '#64748b';
+        ctx.font        = '11px system-ui, sans-serif';
+
+        ctx.textAlign    = 'center';
+        ctx.textBaseline = 'top';
+        for (let x = dataMinX; x <= dataMaxX; x += GRID_STEP) {
+            const cx = toX(x);
+            ctx.beginPath(); ctx.moveTo(cx, PAD); ctx.lineTo(cx, PAD + innerH); ctx.stroke();
+            ctx.fillText(x, cx, PAD + innerH + 5);
+        }
+
+        ctx.textAlign    = 'right';
+        ctx.textBaseline = 'middle';
+        for (let y = dataMinY; y <= dataMaxY; y += GRID_STEP) {
+            const cy = toY(y);
+            ctx.beginPath(); ctx.moveTo(PAD, cy); ctx.lineTo(PAD + innerW, cy); ctx.stroke();
+            ctx.fillText(y, PAD - 6, cy);
+        }
+
+        // Axis labels
+        ctx.fillStyle    = '#475569';
+        ctx.font         = 'bold 11px system-ui, sans-serif';
+        ctx.textAlign    = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('X (cm)', PAD + innerW / 2, H - 2);
+
+        ctx.save();
+        ctx.translate(12, PAD + innerH / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textBaseline = 'top';
+        ctx.fillText('Y (cm)', 0, 0);
+        ctx.restore();
+
+        // Border
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth   = 1.5;
+        ctx.strokeRect(PAD, PAD, innerW, innerH);
+
+        // Spawn points
+        for (const pt of points) {
+            const cx = toX(pt.x);
+            const cy = toY(pt.y);
+
+            ctx.beginPath();
+            ctx.arc(cx, cy, POINT_R, 0, Math.PI * 2);
+            if (pt.active) {
+                ctx.fillStyle   = '#16a34a';
+                ctx.strokeStyle = '#ffffff';
+            } else {
+                ctx.fillStyle   = '#cbd5e1';
+                ctx.strokeStyle = '#94a3b8';
+            }
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Label above the dot
+            ctx.fillStyle    = pt.active ? '#15803d' : '#94a3b8';
+            ctx.font         = 'bold 10px system-ui, sans-serif';
+            ctx.textAlign    = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(pt.name, cx, cy - POINT_R - 2);
+        }
+
+        // Cache data for tooltip hit-testing
+        canvas._spawnData = { points, toX, toY, scale };
+    }
+
+    _spawnCanvasMouseMove(e) {
+        const canvas  = e.currentTarget;
+        const tooltip = document.getElementById('spawn-tooltip');
+        if (!canvas._spawnData) return;
+
+        const { points, toX, toY } = canvas._spawnData;
+        const rect       = canvas.getBoundingClientRect();
+        const pixelRatio = canvas.width / rect.width;   // handles CSS scaling
+        const mx = (e.clientX - rect.left) * pixelRatio;
+        const my = (e.clientY - rect.top)  * pixelRatio;
+        const HIT_R = 14;  // px in canvas coordinates
+
+        let found = null;
+        for (const pt of points) {
+            if (Math.hypot(mx - toX(pt.x), my - toY(pt.y)) <= HIT_R) { found = pt; break; }
+        }
+
+        if (found) {
+            tooltip.textContent  = `${found.name}  (${found.x}, ${found.y}) cm${found.active ? '' : '  [inactive]'}`;
+            tooltip.style.display = 'block';
+            // Position in CSS pixels relative to .spawn-canvas-wrap
+            tooltip.style.left   = (e.offsetX + 14) + 'px';
+            tooltip.style.top    = (e.offsetY - 32) + 'px';
+        } else {
+            tooltip.style.display = 'none';
         }
     }
 
