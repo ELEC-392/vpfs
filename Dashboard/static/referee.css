@@ -1,0 +1,647 @@
+/* ============================================================
+   VPFS Referee Panel Styles
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f0f4f0;
+    color: #1a2e1a;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ── Header ──────────────────────────────────────────────── */
+.ref-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 24px;
+    background: linear-gradient(135deg, #1a5c2a 0%, #2d7a3e 100%);
+    color: white;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+.ref-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.ref-header h1 {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+
+/* Mobile-only toggle button (hidden on desktop) */
+.btn-team-toggle {
+    display: none;
+    background: rgba(255,255,255,0.2);
+    border: 1px solid rgba(255,255,255,0.4);
+    color: white;
+    padding: 7px 13px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.2s;
+}
+.btn-team-toggle:hover {
+    background: rgba(255,255,255,0.35);
+}
+
+/* Close button inside the drawer header (mobile) */
+.ref-team-list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid #e0eee0;
+    flex-shrink: 0;
+}
+.ref-team-list-header h2 {
+    padding: 0;
+    border-bottom: none;
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #4a7a4a;
+}
+.btn-close-panel {
+    display: none;
+    background: none;
+    border: none;
+    font-size: 18px;
+    color: #888;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    line-height: 1;
+}
+.btn-close-panel:hover { color: #333; background: #f0f0f0; }
+
+.ref-header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.ref-identity {
+    font-size: 14px;
+    opacity: 0.9;
+}
+
+.btn-logout {
+    background: rgba(255,255,255,0.2);
+    border: 1px solid rgba(255,255,255,0.4);
+    color: white;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.btn-logout:hover {
+    background: rgba(255,255,255,0.35);
+}
+
+/* ── Main Layout ─────────────────────────────────────────── */
+.ref-layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+.match-locked-notice {
+    background: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffc107;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    text-align: center;
+}
+
+/* ── Team List (left panel) ──────────────────────────────── */
+.ref-team-list {
+    width: 280px;
+    min-width: 220px;
+    background: #ffffff;
+    border-right: 1px solid #d4e8d4;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+/* Remove old standalone h2 rule — heading is now inside .ref-team-list-header */
+
+#team-list-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+}
+
+/* Backdrop (mobile only) */
+.ref-drawer-backdrop {
+    display: none;
+}
+
+.placeholder-msg {
+    padding: 20px;
+    color: #888;
+    font-size: 14px;
+    text-align: center;
+}
+
+/* ── Team Card ───────────────────────────────────────────── */
+.team-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.team-card:hover {
+    background: #f0f8f0;
+}
+
+.team-card.selected {
+    background: #e6f5e6;
+    border-left-color: #2d7a3e;
+}
+
+.team-card-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1a2e1a;
+}
+
+.team-card-sub {
+    font-size: 12px;
+    color: #667;
+    margin-top: 2px;
+}
+
+.team-card-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+}
+
+.team-assigned-badge {
+    font-size: 11px;
+    background: #d4eeda;
+    color: #1a5c2a;
+    border-radius: 10px;
+    padding: 2px 8px;
+    white-space: nowrap;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.team-assigned-badge.is-me {
+    background: #bbf7d0;
+    color: #065f46;
+    font-weight: 700;
+}
+
+/* ── Control Panel (right) ───────────────────────────────── */
+.ref-control-panel {
+    flex: 1;
+    overflow-y: auto;
+    padding: 28px 32px;
+}
+
+.empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #888;
+    font-size: 16px;
+}
+
+/* ── Team Header ─────────────────────────────────────────── */
+.team-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 28px;
+    padding-bottom: 20px;
+    border-bottom: 2px solid #d4e8d4;
+}
+
+.team-header h2 {
+    font-size: 22px;
+    font-weight: 700;
+    color: #1a2e1a;
+    margin-bottom: 6px;
+}
+
+.fare-status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.karma-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.karma-label {
+    font-size: 13px;
+    color: #666;
+}
+
+.karma-value {
+    font-size: 13px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 8px;
+    background: #f0f0f0;
+    color: #555;
+}
+
+.karma-value.karma-pos { background: #e0f0e8; color: #1a5c2a; }
+.karma-value.karma-neg { background: #fde8e8; color: #c0392b; }
+
+.fare-label {
+    font-size: 13px;
+    color: #666;
+}
+
+.fare-badge {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 10px;
+    background: #e0eee0;
+    color: #2d7a3e;
+}
+
+.fare-badge.state-to_pickup    { background: #fef3c7; color: #92400e; }
+.fare-badge.state-at_pickup    { background: #dbeafe; color: #1e40af; }
+.fare-badge.state-to_dropoff   { background: #ede9fe; color: #5b21b6; }
+.fare-badge.state-at_dropoff   { background: #d1fae5; color: #065f46; }
+.fare-badge.state-none         { background: #f3f4f6; color: #6b7280; }
+
+.fare-type-badge {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #fff3cd;
+    color: #856404;
+}
+
+.fare-type-badge.type-STANDARD { background: #e0eee0; color: #2d7a3e; }
+.fare-type-badge.type-SPECIAL  { background: #fde8d8; color: #a84300; }
+
+.btn-unassign {
+    background: #fff;
+    border: 1px solid #ccc;
+    color: #666;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.btn-unassign:hover {
+    border-color: #dc2626;
+    color: #dc2626;
+    background: #fef2f2;
+}
+
+/* ── Sections ────────────────────────────────────────────── */
+.ref-section {
+    background: #fff;
+    border: 1px solid #d4e8d4;
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 20px;
+}
+
+.ref-section h3 {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #4a7a4a;
+    margin-bottom: 16px;
+}
+
+.ref-section--auto {
+    border-color: #e0e0e0;
+    background: #fafafa;
+}
+
+.ref-section--auto h3 {
+    color: #888;
+}
+
+/* ── Counter Row ─────────────────────────────────────────── */
+.counter-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid #f0f4f0;
+}
+
+.counter-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.counter-label {
+    font-size: 15px;
+    font-weight: 500;
+    color: #1a2e1a;
+}
+
+.counter-label.severe {
+    color: #c0392b;
+    font-weight: 700;
+}
+
+.counter-label-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.counter-hint {
+    font-size: 11px;
+    color: #888;
+}
+
+.counter-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+}
+
+.counter-value {
+    font-size: 26px;
+    font-weight: 800;
+    min-width: 40px;
+    text-align: center;
+    color: #1a2e1a;
+    font-variant-numeric: tabular-nums;
+}
+
+.btn-minus, .btn-plus {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 2px solid;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    user-select: none;
+}
+
+.btn-minus {
+    border-color: #e74c3c;
+    color: #e74c3c;
+    background: #fff;
+}
+
+.btn-minus:hover:not(:disabled) {
+    background: #e74c3c;
+    color: #fff;
+}
+
+.btn-plus {
+    border-color: #27ae60;
+    color: #27ae60;
+    background: #fff;
+}
+
+.btn-plus:hover:not(:disabled) {
+    background: #27ae60;
+    color: #fff;
+}
+
+.btn-minus:disabled, .btn-plus:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.btn-minus:active:not(:disabled), .btn-plus:active:not(:disabled) {
+    transform: scale(0.9);
+}
+
+/* ── Auto Row (read-only) ────────────────────────────────── */
+.auto-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid #eee;
+}
+
+.auto-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.auto-label {
+    font-size: 14px;
+    color: #555;
+}
+
+.auto-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: #888;
+    min-width: 32px;
+    text-align: center;
+}
+
+.auto-value.on-track { color: #2d7a3e; }
+.auto-value.lost      { color: #c0392b; }
+
+.auto-badge {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: lowercase;
+    letter-spacing: 0;
+    background: #e0e0e0;
+    color: #666;
+    border-radius: 8px;
+    padding: 2px 8px;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+/* ── Toast ───────────────────────────────────────────────── */
+.toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    background: #1a5c2a;
+    color: white;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none;
+    z-index: 1000;
+    max-width: 300px;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast.error {
+    background: #c0392b;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #c0d8c0; border-radius: 3px; }
+
+/* ── Responsive — Tablet (≤ 1024 px) ────────────────────── */
+@media (max-width: 1024px) {
+    .ref-team-list {
+        width: 220px;
+        min-width: 180px;
+    }
+    .ref-control-panel {
+        padding: 20px 20px;
+    }
+    .btn-minus, .btn-plus {
+        width: 46px;
+        height: 46px;
+    }
+    .ref-header h1 { font-size: 17px; }
+}
+
+/* ── Responsive — Mobile (≤ 700 px) ─────────────────────── */
+@media (max-width: 700px) {
+    body { overflow: auto; }
+
+    .ref-header { padding: 10px 16px; }
+    .ref-header h1 { font-size: 16px; }
+    .ref-identity { display: none; }   /* save header space */
+
+    /* Show mobile toggle */
+    .btn-team-toggle { display: block; }
+
+    /* Show drawer close button */
+    .btn-close-panel { display: block; }
+
+    /* Layout becomes single-column; panel slides in over content */
+    .ref-layout {
+        position: relative;
+        flex-direction: column;
+        overflow: visible;
+    }
+
+    /* Team list becomes a slide-in drawer */
+    .ref-team-list {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 85%;
+        max-width: 320px;
+        z-index: 200;
+        border-right: none;
+        box-shadow: 4px 0 24px rgba(0,0,0,0.18);
+        transform: translateX(-110%);
+        transition: transform 0.25s ease;
+    }
+    .ref-team-list.drawer-open {
+        transform: translateX(0);
+    }
+
+    /* Dim backdrop */
+    .ref-drawer-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.4);
+        z-index: 199;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s ease;
+    }
+    .ref-drawer-backdrop.visible {
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    /* Control panel fills the screen */
+    .ref-control-panel {
+        padding: 16px;
+        min-height: calc(100vh - 52px);
+    }
+
+    /* Bigger touch targets for counter buttons */
+    .btn-minus, .btn-plus {
+        width: 52px;
+        height: 52px;
+        font-size: 26px;
+    }
+    .counter-value {
+        font-size: 30px;
+        min-width: 44px;
+    }
+    .counter-label { font-size: 16px; }
+
+    /* Sections full-width */
+    .ref-section {
+        padding: 16px;
+        border-radius: 10px;
+    }
+
+    /* Unassign button — move below team name on very small screens */
+    .team-header {
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+    .btn-unassign {
+        padding: 10px 16px;
+        font-size: 14px;
+    }
+}

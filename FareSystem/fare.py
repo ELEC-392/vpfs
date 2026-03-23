@@ -5,7 +5,7 @@ from pathlib import Path
 from utils import Point
 from team import Team
 import time
-from params import POSITION_TOLERANCE, PICKUP_DURATION
+from params import POSITION_TOLERANCE, PICKUP_DURATION, ACHIEVEMENT_BONUS
 from fare_types import (
     FareType,
     get_base_fare,
@@ -66,6 +66,13 @@ class Fare:
         self.completed = False
         self.paid = False
 
+        # Referee tracking (populated live during the fare)
+        self.standard_violations: int = 0
+        self.severe_violations: int = 0
+        self.achievements: set[str] = set()  # manual achievements granted by referees
+        # Teams that dropped this fare (any drop = manual intervention = disqualifies Look Ma!)
+        self.dropped_teams: set[int] = set()
+
     def compute_fare(self) -> float:
         """
         Compute the fare earned from delivering this ducky
@@ -119,6 +126,7 @@ class Fare:
             team.karma -= self.compute_karma()
             team.karma = max(-100, min(100, team.karma))
 
+        self.dropped_teams.add(team.number)
         self.team = None
         self.inPosition = False
         self.pickedUp = False
@@ -131,19 +139,43 @@ class Fare:
 
     def pay_fare(self, teams : list[Team]):
         """
-        Pay the team their fare
-        Will ensure that fare is completed and fare is not already paid
+        Pay the team their fare, applying any achievement bonuses earned during it.
+        Will ensure that fare is completed and fare is not already paid.
         :param teams: List of teams
         """
         if self.paid or not self.completed:
             return
         team = teams[self.team]
         if team is not None:
+            # Auto-award achievements based on fare outcome
+            if self.standard_violations == 0 and self.severe_violations == 0:
+                self.achievements.add("SAFETY_FIRST")
+            if self.type.name == "SPECIAL":
+                self.achievements.add("HOLDING_OUT")
+            # Delivering team never dropped this fare = fully autonomous from claim to delivery
+            if self.team not in self.dropped_teams:
+                self.achievements.add("LOOK_MA_NO_HANDS")
+
+            # Each achievement stacks a flat +ACHIEVEMENT_BONUS on the base karma
+            base_karma = self.compute_karma()
+            multiplier = 1.0 + ACHIEVEMENT_BONUS * len(self.achievements)
+            final_karma = base_karma * multiplier
+
             team.money += self.compute_fare()
-            team.karma += self.compute_karma()
+            team.karma += final_karma
             team.karma = max(-100, min(100, team.karma))
             team.currentFare = None
             self.paid = True
+
+            # Record auto-achievements to DB (manual ones were recorded at grant time)
+            if _recorder is not None:
+                match_id = self.unique_id // 1000
+                for ach in ("SAFETY_FIRST", "HOLDING_OUT", "LOOK_MA_NO_HANDS"):
+                    if ach in self.achievements:
+                        _recorder.record_achievement(
+                            match_id, team.number, self.unique_id, ach, "SYSTEM"
+                        )
+
             _rec_event(self.unique_id, "PAID", team_id=self.team,
                        money_after=team.money, karma_after=team.karma)
 

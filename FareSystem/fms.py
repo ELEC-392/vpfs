@@ -69,6 +69,10 @@ for point in points:
 # Populated at runtime via the admin UI; starts empty.
 teams: dict[int, Team] = {}
 
+# Tracks which teams have already received the "You Spin Me Round" achievement
+# this match (granted at most once per team per match).
+spin_round_awarded: set[int] = set()
+
 # Desired number of concurrently active fares displayed/managed by the system.
 TARGET_FARES = 99
 
@@ -247,6 +251,7 @@ def start_match():
             # Fresh start
             random.seed(matchSeed)
             fareSequence = 0
+            spin_round_awarded.clear()
             print(f"Match {matchNum} started with seed={matchSeed}")
             matchEndTime    = time.time() + matchDuration
             matchTimeRemain = matchDuration
@@ -290,3 +295,4 @@ def cancel_match():
         matchPaused     = False
         matchTimeRemain = 0
         fares           = []
+        spin_round_awarded.clear()

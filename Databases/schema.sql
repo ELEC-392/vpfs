@@ -102,6 +102,66 @@ CREATE TABLE IF NOT EXISTS position_samples (
 CREATE INDEX IF NOT EXISTS idx_pos_match_team_ts ON position_samples(match_id, team_id, ts);
 
 -- ---------------------------------------------------------------------------
+-- Referee assignments  (which referee is watching which team per match)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS referee_assignments (
+    match_id     INTEGER NOT NULL,
+    team_id      INTEGER NOT NULL,
+    referee_id   TEXT    NOT NULL,
+    assigned_at  REAL    NOT NULL,
+    PRIMARY KEY (match_id, team_id),
+    FOREIGN KEY (match_id) REFERENCES matches(match_id),
+    FOREIGN KEY (team_id)  REFERENCES teams(team_id)
+);
+
+-- ---------------------------------------------------------------------------
+-- Safety violations  (one row per violation event)
+--
+-- violation_type values: 'STANDARD', 'SEVERE'
+-- fare_uid is the fare active at the time of the violation (NULL if no fare).
+-- Linking to fare_uid enables automatic "Safety First" computation at match end:
+--   a DELIVERED fare with zero violations for that fare_uid + team earns the award.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS violations (
+    violation_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id       INTEGER NOT NULL,
+    team_id        INTEGER NOT NULL,
+    fare_uid       INTEGER,
+    violation_type TEXT    NOT NULL,
+    referee_id     TEXT    NOT NULL,
+    ts             REAL    NOT NULL,
+    FOREIGN KEY (match_id) REFERENCES matches(match_id),
+    FOREIGN KEY (team_id)  REFERENCES teams(team_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_violations_team ON violations(match_id, team_id);
+CREATE INDEX IF NOT EXISTS idx_violations_fare ON violations(fare_uid);
+
+-- ---------------------------------------------------------------------------
+-- Achievements  (one row per award — both manual and auto-computed)
+--
+-- achievement_type values:
+--   SAFETY_FIRST      auto-granted at match end (DELIVERED fare with no violations)
+--   HOLDING_OUT       auto-granted at match end (SPECIAL fare delivered)
+--   ZERO_DUCKS_GIVEN  manually granted by referee (risky legal maneuver pays off)
+--   YOU_SPIN_ME_ROUND manually granted by referee (roundabout entry/exit clean)
+-- granted_by: referee_id for manual grants, 'SYSTEM' for auto-computed grants.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS achievements (
+    achievement_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id         INTEGER NOT NULL,
+    team_id          INTEGER NOT NULL,
+    fare_uid         INTEGER,
+    achievement_type TEXT    NOT NULL,
+    granted_by       TEXT    NOT NULL,
+    ts               REAL    NOT NULL,
+    FOREIGN KEY (match_id) REFERENCES matches(match_id),
+    FOREIGN KEY (team_id)  REFERENCES teams(team_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_achievements_team ON achievements(match_id, team_id);
+
+-- ---------------------------------------------------------------------------
 -- Per-match per-team summary  (written at match end by the recorder)
 -- All times in seconds.
 --

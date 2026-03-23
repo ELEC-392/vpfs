@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VPFS - Referee Login</title>
+    <link rel="stylesheet" href="/static/admin.css">
+    <style>
+        .login-wrapper {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .login-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px 48px;
+            width: 100%;
+            max-width: 380px;
+            text-align: center;
+        }
+        .login-card h1 {
+            font-size: 22px;
+            font-weight: 600;
+            color: #1a5c2a;
+            margin-bottom: 8px;
+        }
+        .login-card p {
+            color: #666;
+            margin-bottom: 28px;
+            font-size: 14px;
+        }
+        .login-card input[type="password"] {
+            width: 100%;
+            padding: 12px 14px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 16px;
+            margin-bottom: 16px;
+            box-sizing: border-box;
+        }
+        .login-card input[type="password"]:focus {
+            outline: none;
+            border-color: #2d7a3e;
+            box-shadow: 0 0 0 3px rgba(45, 122, 62, 0.15);
+        }
+        .login-card button {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #1a5c2a 0%, #2d7a3e 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .login-card button:hover {
+            opacity: 0.9;
+        }
+        .error-msg {
+            background: #fef2f2;
+            color: #dc2626;
+            border: 1px solid #fecaca;
+            border-radius: 6px;
+            padding: 10px 14px;
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-wrapper">
+        <div class="login-card">
+            <h1>🏁 VPFS Referee</h1>
+            <p>Enter your referee code to continue</p>
+            {% if error %}
+            <div class="error-msg">{{ error }}</div>
+            {% endif %}
+            <form method="POST" action="/referee/login">
+                <input type="password" name="code" placeholder="Referee code" autofocus>
+                <button type="submit">Sign in</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>

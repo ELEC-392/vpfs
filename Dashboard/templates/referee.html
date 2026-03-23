@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VPFS - Referee Panel</title>
+    <link rel="stylesheet" href="/static/referee.css">
+</head>
+<body>
+    <header class="ref-header">
+        <div class="ref-header-left">
+            <!-- Mobile-only toggle -->
+            <button class="btn-team-toggle" id="btn-team-toggle" aria-label="Show teams" aria-expanded="false">
+                ☰ Teams
+            </button>
+            <h1>🏁 Referee Panel</h1>
+        </div>
+        <div class="ref-header-right">
+            <span class="ref-identity">{{ referee_name }}</span>
+            <form method="POST" action="/referee/logout" style="display:inline;">
+                <button type="submit" class="btn-logout">Sign out</button>
+            </form>
+        </div>
+    </header>
+
+    <div class="ref-layout">
+        <!-- ================================================================
+             Left panel — team list
+        ================================================================= -->
+        <aside class="ref-team-list" id="ref-team-list">
+            <div class="ref-team-list-header">
+                <h2>Teams</h2>
+                <button class="btn-close-panel" id="btn-close-panel" aria-label="Close panel">✕</button>
+            </div>
+            <div id="team-list-container">
+                <p class="placeholder-msg">Loading teams…</p>
+            </div>
+        </aside>
+
+        <!-- Backdrop for mobile drawer -->
+        <div class="ref-drawer-backdrop" id="ref-drawer-backdrop"></div>
+
+        <!-- ================================================================
+             Right panel — judging controls (hidden until a team is selected)
+        ================================================================= -->
+        <main class="ref-control-panel" id="control-panel">
+            <!-- ── Empty state ── -->
+            <div class="empty-state" id="empty-state">
+                <p>Select a team on the left to start judging.</p>
+            </div>
+
+            <!-- ── Active state ── -->
+            <div class="active-state" id="active-state" style="display:none;">
+
+                <!-- Match-not-running notice (hidden while match is live) -->
+                <div class="match-locked-notice" id="match-locked-notice" style="display:none;">
+                    ⏸️ Match not running — entries are disabled
+                </div>
+
+                <!-- Team header -->
+                <div class="team-header">
+                    <div>
+                        <h2 id="panel-team-name">—</h2>
+                        <div class="fare-status-row">
+                            <span class="fare-label">Fare:</span>
+                            <span class="fare-badge" id="panel-fare-badge">—</span>
+                            <span class="fare-type-badge" id="panel-fare-type"></span>
+                        </div>
+                        <div class="karma-row">
+                            <span class="karma-label">Karma:</span>
+                            <span class="karma-value" id="panel-karma">—</span>
+                        </div>
+                    </div>
+                    <button class="btn-unassign" id="btn-unassign" title="Stop watching this team">✕ Unassign</button>
+                </div>
+
+                <!-- ── Violations ── -->
+                <section class="ref-section">
+                    <h3>Violations</h3>
+                    <div class="counter-row">
+                        <span class="counter-label">Standard</span>
+                        <div class="counter-controls">
+                            <button class="btn-minus" data-action="violation" data-type="STANDARD" data-delta="-1">−</button>
+                            <span class="counter-value" id="count-STANDARD">0</span>
+                            <button class="btn-plus"  data-action="violation" data-type="STANDARD" data-delta="1">+</button>
+                        </div>
+                    </div>
+                    <div class="counter-row">
+                        <span class="counter-label severe">Severe</span>
+                        <div class="counter-controls">
+                            <button class="btn-minus" data-action="violation" data-type="SEVERE" data-delta="-1">−</button>
+                            <span class="counter-value" id="count-SEVERE">0</span>
+                            <button class="btn-plus"  data-action="violation" data-type="SEVERE" data-delta="1">+</button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ── Manual achievements ── -->
+                <section class="ref-section">
+                    <h3>Achievements</h3>
+
+                    <div class="counter-row">
+                        <div class="counter-label-group">
+                            <span class="counter-label">Zero Ducks Given</span>
+                            <span class="counter-hint">Risky legal maneuver that paid off</span>
+                        </div>
+                        <div class="counter-controls">
+                            <span class="counter-value" id="count-ZERO_DUCKS_GIVEN">0</span>
+                            <button class="btn-plus"  data-action="achievement" data-type="ZERO_DUCKS_GIVEN">+</button>
+                        </div>
+                    </div>
+
+                    <div class="counter-row">
+                        <div class="counter-label-group">
+                            <span class="counter-label">You Spin Me Round</span>
+                            <span class="counter-hint">Roundabout entry/exit with no violations</span>
+                        </div>
+                        <div class="counter-controls">
+                            <span class="counter-value" id="count-YOU_SPIN_ME_ROUND">0</span>
+                            <button class="btn-plus"  data-action="achievement" data-type="YOU_SPIN_ME_ROUND">+</button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ── Auto-computed achievements (read-only display) ── -->
+                <section class="ref-section ref-section--auto">
+                    <h3>Auto-awarded <span class="auto-badge">at fare delivery</span></h3>
+                    <div class="auto-row">
+                        <span class="auto-label">Safety First</span>
+                        <span class="auto-value" id="count-SAFETY_FIRST">—</span>
+                    </div>
+                    <div class="auto-row">
+                        <span class="auto-label">Holding Out for a Hero</span>
+                        <span class="auto-value" id="count-HOLDING_OUT">—</span>
+                    </div>
+                    <div class="auto-row">
+                        <span class="auto-label">Look Ma! No Hands!</span>
+                        <span class="auto-value" id="count-LOOK_MA_NO_HANDS">—</span>
+                    </div>
+                </section>
+
+            </div><!-- /active-state -->
+        </main>
+    </div><!-- /ref-layout -->
+
+    <!-- Toast notifications -->
+    <div id="toast" class="toast" aria-live="polite"></div>
+
+    <script>
+        // Pass server-side values to JS
+        const REFEREE_ID   = "{{ referee_id }}";
+        const REFEREE_NAME = "{{ referee_name }}";
+    </script>
+    <script src="/static/referee.js"></script>
+</body>
+</html>

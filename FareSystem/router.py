@@ -24,7 +24,7 @@ import fms
 from jsonschema import validate
 from threading import Thread
 from auth import authenticate
-from params import MODE, OperatingMode
+from params import MODE, OperatingMode, VIOLATION_STANDARD, VIOLATION_SEVERE
 from team import Team
 
 # fms.py already inserts Databases/ into sys.path, so recorder is importable here.
@@ -90,6 +90,9 @@ _admin_config_path = Path(__file__).resolve().parents[1] / "Config" / "admin.yam
 with open(_admin_config_path) as _f:
     _admin_cfg = yaml.safe_load(_f)
 
+# Referee credentials: {ref_id: {"name": str, "code": str}}
+_referees: dict = _admin_cfg.get("referees", {})
+
 # Create Flask app and Socket.IO wrapper
 # Configure template and static folders for map monitor
 app = Flask(__name__,
@@ -107,6 +110,19 @@ def require_admin(f):
             if request.path.startswith("/api/"):
                 return jsonify({"success": False, "message": "Unauthorized"}), 401
             return redirect(url_for("serve_admin_login"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def require_referee(f):
+    """Decorator that enforces referee session auth.
+    API routes get a 401 JSON response; page routes redirect to referee login."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("referee_authenticated"):
+            if request.path.startswith("/api/"):
+                return jsonify({"success": False, "message": "Unauthorized"}), 401
+            return redirect(url_for("serve_referee_login"))
         return f(*args, **kwargs)
     return decorated
 
@@ -154,6 +170,309 @@ def do_admin_logout():
     """Clear the admin session."""
     session.pop("admin_authenticated", None)
     return redirect(url_for("serve_admin_login"))
+
+
+# ---------------------------------------------------------------------------
+# Referee panel routes
+# ---------------------------------------------------------------------------
+@app.route("/referee")
+@require_referee
+def serve_referee():
+    """Serve the referee judging interface."""
+    return render_template("referee.html",
+                           referee_name=session.get("referee_name", "Referee"),
+                           referee_id=session.get("referee_id", ""))
+
+
+@app.route("/referee/login", methods=["GET"])
+def serve_referee_login():
+    """Serve the referee login page."""
+    if session.get("referee_authenticated"):
+        return redirect(url_for("serve_referee"))
+    return render_template("referee_login.html", error=None)
+
+
+@app.route("/referee/login", methods=["POST"])
+def do_referee_login():
+    """Validate the submitted referee code and create a session."""
+    code = request.form.get("code", "")
+    for ref_id, ref_info in _referees.items():
+        if code == ref_info.get("code", ""):
+            session["referee_authenticated"] = True
+            session["referee_id"] = ref_id
+            session["referee_name"] = ref_info.get("name", ref_id)
+            return redirect(url_for("serve_referee"))
+    return render_template("referee_login.html", error="Invalid referee code")
+
+
+@app.route("/referee/logout", methods=["POST"])
+def do_referee_logout():
+    """Clear the referee session."""
+    session.pop("referee_authenticated", None)
+    session.pop("referee_id", None)
+    session.pop("referee_name", None)
+    return redirect(url_for("serve_referee_login"))
+
+
+# -- Referee API --------------------------------------------------------------
+
+def _team_fare_state(team):
+    """Return (fare_state, fare_uid, fare_type) for a team. Must be called under fms.mutex."""
+    fare_state = fare_uid = fare_type = None
+    if team.currentFare is not None:
+        fare_idx = team.currentFare
+        if 0 <= fare_idx < len(fms.fares):
+            f = fms.fares[fare_idx]
+            fare_uid = f.unique_id
+            fare_type = f.type.name
+            if f.pickedUp and f.inPosition:
+                fare_state = "at_dropoff"
+            elif f.pickedUp:
+                fare_state = "to_dropoff"
+            elif f.inPosition:
+                fare_state = "at_pickup"
+            else:
+                fare_state = "to_pickup"
+    return fare_state, fare_uid, fare_type
+
+
+@app.route("/api/referee/teams")
+@require_referee
+def api_referee_teams():
+    """Returns all active teams with their fare status and assigned referee."""
+    with fms.mutex:
+        match_id = fms.matchNum
+        teams_data = []
+        for team in sorted(fms.teams.values(), key=lambda t: t.number):
+            fare_state, fare_uid, fare_type = _team_fare_state(team)
+            teams_data.append({
+                "number":    team.number,
+                "name":      getattr(team, "name", f"Team {team.number}"),
+                "fareState": fare_state,
+                "fareUid":   fare_uid,
+                "fareType":  fare_type,
+            })
+
+    assignments = {}
+    if recorder and match_id:
+        try:
+            assignments = recorder.get_assignments(match_id)
+        except Exception as exc:
+            print(f"[referee] get_assignments error: {exc}")
+
+    for t in teams_data:
+        ref_id = assignments.get(t["number"])
+        t["assignedReferee"] = ref_id
+        t["assignedRefereeName"] = _referees.get(ref_id, {}).get("name", ref_id) if ref_id else None
+
+    return jsonify({"teams": teams_data, "matchId": match_id})
+
+
+@app.route("/api/referee/assign", methods=["POST"])
+@require_referee
+def api_referee_assign():
+    """Assign the current referee to a team for this match.
+
+    Clears any previous assignment for this referee first (one-team-at-a-time rule).
+    """
+    data = request.get_json(silent=True) or {}
+    team_id = data.get("teamId")
+    if team_id is None:
+        return jsonify({"success": False, "message": "teamId required"}), 400
+
+    referee_id = session["referee_id"]
+    with fms.mutex:
+        match_id = fms.matchNum
+        if team_id not in fms.teams:
+            return jsonify({"success": False, "message": "Team not found"}), 404
+
+    if recorder and match_id:
+        # record_assignment internally clears the old assignment first.
+        recorder.record_assignment(match_id, team_id, referee_id)
+
+    return jsonify({"success": True})
+
+
+@app.route("/api/referee/unassign", methods=["POST"])
+@require_referee
+def api_referee_unassign():
+    """Remove the current referee's assignment so the team becomes free."""
+    referee_id = session["referee_id"]
+    with fms.mutex:
+        match_id = fms.matchNum
+
+    if recorder and match_id:
+        recorder.clear_referee_assignments(match_id, referee_id)
+
+    return jsonify({"success": True})
+
+
+@app.route("/api/referee/team/<int:team_id>/state")
+@require_referee
+def api_referee_team_state(team_id):
+    """Returns live fare status, karma, and per-fare violation/achievement counts for a team."""
+    with fms.mutex:
+        match_id = fms.matchNum
+        if team_id not in fms.teams:
+            return jsonify({"success": False, "message": "Team not found"}), 404
+        team = fms.teams[team_id]
+        fare_state, fare_uid, fare_type = _team_fare_state(team)
+        karma = team.karma
+
+        # Show match-level totals in the counter; fare-level counters are for Safety First only
+        violations = {
+            "STANDARD": team.standard_violations,
+            "SEVERE":   team.severe_violations,
+        }
+        achievements = {"ZERO_DUCKS_GIVEN": 0, "YOU_SPIN_ME_ROUND": 0}
+        safety_first_on_track = False
+        holding_out_on_track  = False
+        look_ma_on_track      = False
+
+        if team.currentFare is not None and 0 <= team.currentFare < len(fms.fares):
+            f = fms.fares[team.currentFare]
+            achievements = {
+                "ZERO_DUCKS_GIVEN":  1 if "ZERO_DUCKS_GIVEN"  in f.achievements else 0,
+                "YOU_SPIN_ME_ROUND": 1 if "YOU_SPIN_ME_ROUND" in f.achievements else 0,
+            }
+            safety_first_on_track = (f.standard_violations == 0 and f.severe_violations == 0)
+            holding_out_on_track  = (f.type.name == "SPECIAL")
+            look_ma_on_track      = (team.number not in f.dropped_teams)
+
+    return jsonify({
+        "success":             True,
+        "matchRunning":        fms.matchRunning,
+        "fareUid":             fare_uid,
+        "fareState":           fare_state,
+        "fareType":            fare_type,
+        "karma":               karma,
+        "violations":          violations,
+        "achievements":        achievements,
+        "safetyFirstOnTrack": safety_first_on_track,
+        "holdingOutOnTrack":  holding_out_on_track,
+        "lookMaOnTrack":      look_ma_on_track,
+    })
+
+
+@app.route("/api/referee/team/<int:team_id>/violation", methods=["POST"])
+@require_referee
+def api_referee_violation(team_id):
+    """Add (delta=1) or undo (delta=-1) a violation, with immediate live karma impact.
+
+    Violations can be applied at any time — no active fare required.
+    When a fare is active its per-fare counter is also updated (used for Safety First).
+    """
+    data  = request.get_json(silent=True) or {}
+    vtype = data.get("type", "").upper()
+    delta = data.get("delta", 0)
+
+    if vtype not in ("STANDARD", "SEVERE"):
+        return jsonify({"success": False, "message": "type must be STANDARD or SEVERE"}), 400
+    if delta not in (1, -1):
+        return jsonify({"success": False, "message": "delta must be 1 or -1"}), 400
+
+    penalty = VIOLATION_STANDARD if vtype == "STANDARD" else VIOLATION_SEVERE
+    referee_id = session["referee_id"]
+
+    with fms.mutex:
+        if not fms.matchRunning:
+            return jsonify({"success": False, "message": "Match is not running"}), 409
+        match_id = fms.matchNum
+        if team_id not in fms.teams:
+            return jsonify({"success": False, "message": "Team not found"}), 404
+        team = fms.teams[team_id]
+
+        fare_obj = None
+        fare_uid = None
+        if team.currentFare is not None and 0 <= team.currentFare < len(fms.fares):
+            fare_obj = fms.fares[team.currentFare]
+            fare_uid = fare_obj.unique_id
+
+        if delta == 1:
+            team.karma = max(-100, min(100, team.karma - penalty))
+            team.standard_violations += (1 if vtype == "STANDARD" else 0)
+            team.severe_violations   += (1 if vtype == "SEVERE"   else 0)
+            if fare_obj is not None:  # also track on the fare for Safety First
+                if vtype == "STANDARD":
+                    fare_obj.standard_violations += 1
+                else:
+                    fare_obj.severe_violations += 1
+        else:  # undo — karma always restored; decrement counters if positive
+            if vtype == "STANDARD" and team.standard_violations > 0:
+                team.standard_violations -= 1
+            elif vtype == "SEVERE" and team.severe_violations > 0:
+                team.severe_violations -= 1
+            if fare_obj is not None:
+                if vtype == "STANDARD" and fare_obj.standard_violations > 0:
+                    fare_obj.standard_violations -= 1
+                elif vtype == "SEVERE" and fare_obj.severe_violations > 0:
+                    fare_obj.severe_violations -= 1
+            team.karma = max(-100, min(100, team.karma + penalty))
+
+        violations_resp = {
+            "STANDARD": team.standard_violations,
+            "SEVERE":   team.severe_violations,
+        }
+
+    if recorder and match_id:
+        if delta == 1:
+            recorder.record_violation(match_id, team_id, fare_uid, vtype, referee_id)
+        else:
+            recorder.delete_latest_violation(match_id, team_id, vtype)
+
+    return jsonify({"success": True, "violations": violations_resp})
+
+
+@app.route("/api/referee/team/<int:team_id>/achievement", methods=["POST"])
+@require_referee
+def api_referee_achievement(team_id):
+    """Grant a manual achievement for the team's current fare (one per fare per type).
+
+    You Spin Me Round is limited to once per team per match.
+    The bonus is applied at fare delivery inside pay_fare().
+    """
+    data  = request.get_json(silent=True) or {}
+    atype = data.get("type", "").upper()
+
+    _MANUAL_ACHIEVEMENTS = ("ZERO_DUCKS_GIVEN", "YOU_SPIN_ME_ROUND")
+    if atype not in _MANUAL_ACHIEVEMENTS:
+        return jsonify({"success": False,
+                        "message": f"type must be one of {_MANUAL_ACHIEVEMENTS}"}), 400
+
+    referee_id = session["referee_id"]
+
+    with fms.mutex:
+        if not fms.matchRunning:
+            return jsonify({"success": False, "message": "Match is not running"}), 409
+        match_id = fms.matchNum
+        if team_id not in fms.teams:
+            return jsonify({"success": False, "message": "Team not found"}), 404
+        team = fms.teams[team_id]
+
+        if team.currentFare is None or not (0 <= team.currentFare < len(fms.fares)):
+            return jsonify({"success": False, "message": "Team has no active fare"}), 400
+        fare_obj = fms.fares[team.currentFare]
+        fare_uid = fare_obj.unique_id
+
+        if atype in fare_obj.achievements:
+            return jsonify({"success": False, "message": "Achievement already granted for this fare"}), 400
+
+        if atype == "YOU_SPIN_ME_ROUND":
+            if team_id in fms.spin_round_awarded:
+                return jsonify({"success": False,
+                                "message": "You Spin Me Round already awarded this match"}), 400
+            fms.spin_round_awarded.add(team_id)
+
+        fare_obj.achievements.add(atype)
+        achievements_resp = {
+            "ZERO_DUCKS_GIVEN":  1 if "ZERO_DUCKS_GIVEN"  in fare_obj.achievements else 0,
+            "YOU_SPIN_ME_ROUND": 1 if "YOU_SPIN_ME_ROUND" in fare_obj.achievements else 0,
+        }
+
+    if recorder and match_id:
+        recorder.record_achievement(match_id, team_id, fare_uid, atype, referee_id)
+
+    return jsonify({"success": True, "achievements": achievements_resp})
 
 @app.route('/assets/<path:filename>')
 def serve_assets(filename):

@@ -113,6 +113,45 @@ CREATE TABLE IF NOT EXISTS position_samples (
 
 CREATE INDEX IF NOT EXISTS idx_pos_match_team_ts ON position_samples(match_id, team_id, ts);
 
+CREATE TABLE IF NOT EXISTS referee_assignments (
+    match_id     INTEGER NOT NULL,
+    team_id      INTEGER NOT NULL,
+    referee_id   TEXT    NOT NULL,
+    assigned_at  REAL    NOT NULL,
+    PRIMARY KEY (match_id, team_id),
+    FOREIGN KEY (match_id) REFERENCES matches(match_id),
+    FOREIGN KEY (team_id)  REFERENCES teams(team_id)
+);
+
+CREATE TABLE IF NOT EXISTS violations (
+    violation_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id       INTEGER NOT NULL,
+    team_id        INTEGER NOT NULL,
+    fare_uid       INTEGER,
+    violation_type TEXT    NOT NULL,
+    referee_id     TEXT    NOT NULL,
+    ts             REAL    NOT NULL,
+    FOREIGN KEY (match_id) REFERENCES matches(match_id),
+    FOREIGN KEY (team_id)  REFERENCES teams(team_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_violations_team ON violations(match_id, team_id);
+CREATE INDEX IF NOT EXISTS idx_violations_fare ON violations(fare_uid);
+
+CREATE TABLE IF NOT EXISTS achievements (
+    achievement_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id         INTEGER NOT NULL,
+    team_id          INTEGER NOT NULL,
+    fare_uid         INTEGER,
+    achievement_type TEXT    NOT NULL,
+    granted_by       TEXT    NOT NULL,
+    ts               REAL    NOT NULL,
+    FOREIGN KEY (match_id) REFERENCES matches(match_id),
+    FOREIGN KEY (team_id)  REFERENCES teams(team_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_achievements_team ON achievements(match_id, team_id);
+
 CREATE TABLE IF NOT EXISTS match_team_summary (
     match_id              INTEGER NOT NULL,
     team_id               INTEGER NOT NULL,
@@ -144,6 +183,11 @@ _match_start_karma: dict[int, float] = {}      # team_id -> karma at match start
 _running = False
 _db_path: Path = _DEFAULT_DB
 _writer_thread: threading.Thread | None = None
+
+# Lock protecting all synchronous (direct-connection) DB writes so they don't
+# race with each other.  The async writer thread has its own connection and is
+# serialized by SQLite's WAL writer lock.
+_sync_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +467,8 @@ def _compute_summaries(match_id: int, end_snapshot: dict) -> None:
         for team_id in team_ids:
             _write_team_summary(conn, match_id, team_id, end_snapshot)
 
+        # Note: auto-achievements (SAFETY_FIRST, HOLDING_OUT) are now recorded
+        # live inside fare.pay_fare() — no batch computation needed here.
         conn.close()
         print(f"[recorder] summaries written for match {match_id} ({len(team_ids)} teams)")
     except Exception as exc:
@@ -509,3 +555,224 @@ def _write_team_summary(
         ),
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Synchronous helpers  (low-frequency referee reads/deletes)
+# ---------------------------------------------------------------------------
+def _sync_read(sql: str, params: tuple = ()) -> list:
+    """Open a short-lived read connection and return all rows."""
+    conn = sqlite3.connect(str(_db_path))
+    try:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+
+def _sync_write(sql: str, params: tuple = ()) -> int:
+    """Open a short-lived write connection (serialised by _sync_lock). Returns rowcount."""
+    with _sync_lock:
+        conn = sqlite3.connect(str(_db_path))
+        try:
+            with conn:
+                cur = conn.execute(sql, params)
+                return cur.rowcount
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Referee assignment recording
+# ---------------------------------------------------------------------------
+def record_assignment(match_id: int, team_id: int, referee_id: str) -> None:
+    """Upsert the referee assignment for a team in the current match.
+
+    Also clears any previous team assignment for this referee so each referee
+    can only watch one team at a time.
+    """
+    # Synchronously drop old assignment for this referee before enqueuing new one.
+    with _sync_lock:
+        conn = sqlite3.connect(str(_db_path))
+        try:
+            with conn:
+                conn.execute(
+                    "DELETE FROM referee_assignments WHERE match_id=? AND referee_id=?",
+                    (match_id, referee_id),
+                )
+        finally:
+            conn.close()
+    _enqueue(
+        "INSERT OR REPLACE INTO referee_assignments(match_id, team_id, referee_id, assigned_at)"
+        " VALUES (?,?,?,?)",
+        (match_id, team_id, referee_id, time.time()),
+    )
+
+
+def clear_referee_assignments(match_id: int, referee_id: str) -> None:
+    """Remove all team assignments for a referee in this match (used on unassign)."""
+    _sync_write(
+        "DELETE FROM referee_assignments WHERE match_id=? AND referee_id=?",
+        (match_id, referee_id),
+    )
+
+
+def get_assignments(match_id: int) -> dict:
+    """Return {team_id: {referee_id, assigned_at}} for all assignments in *match_id*."""
+    rows = _sync_read(
+        "SELECT team_id, referee_id FROM referee_assignments WHERE match_id=?",
+        (match_id,),
+    )
+    return {r["team_id"]: r["referee_id"] for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# Violation recording
+# ---------------------------------------------------------------------------
+def record_violation(
+    match_id: int,
+    team_id: int,
+    fare_uid: "int | None",
+    violation_type: str,
+    referee_id: str,
+) -> None:
+    """Async insert of one violation row."""
+    _enqueue(
+        "INSERT INTO violations(match_id, team_id, fare_uid, violation_type, referee_id, ts)"
+        " VALUES (?,?,?,?,?,?)",
+        (match_id, team_id, fare_uid, violation_type, referee_id, time.time()),
+    )
+
+
+def delete_latest_violation(match_id: int, team_id: int, violation_type: str) -> bool:
+    """Delete the most recent violation of *violation_type* for this team. Returns True if one was deleted."""
+    rows = _sync_read(
+        "SELECT violation_id FROM violations"
+        " WHERE match_id=? AND team_id=? AND violation_type=?"
+        " ORDER BY ts DESC LIMIT 1",
+        (match_id, team_id, violation_type),
+    )
+    if not rows:
+        return False
+    _sync_write("DELETE FROM violations WHERE violation_id=?", (rows[0]["violation_id"],))
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Achievement recording
+# ---------------------------------------------------------------------------
+def record_achievement(
+    match_id: int,
+    team_id: int,
+    fare_uid: "int | None",
+    achievement_type: str,
+    granted_by: str,
+) -> None:
+    """Async insert of one achievement row."""
+    _enqueue(
+        "INSERT INTO achievements(match_id, team_id, fare_uid, achievement_type, granted_by, ts)"
+        " VALUES (?,?,?,?,?,?)",
+        (match_id, team_id, fare_uid, achievement_type, granted_by, time.time()),
+    )
+
+
+def delete_latest_achievement(match_id: int, team_id: int, achievement_type: str) -> bool:
+    """Delete the most recent achievement of *achievement_type* for this team. Returns True if one was deleted."""
+    rows = _sync_read(
+        "SELECT achievement_id FROM achievements"
+        " WHERE match_id=? AND team_id=? AND achievement_type=?"
+        " ORDER BY ts DESC LIMIT 1",
+        (match_id, team_id, achievement_type),
+    )
+    if not rows:
+        return False
+    _sync_write("DELETE FROM achievements WHERE achievement_id=?", (rows[0]["achievement_id"],))
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Live team counts  (used by the referee panel)
+# ---------------------------------------------------------------------------
+def get_team_counts(match_id: int, team_id: int) -> dict:
+    """Return violation and achievement counts for *team_id* in *match_id*.
+
+    Returns::
+
+        {
+            "violations":   {"STANDARD": int, "SEVERE": int},
+            "achievements": {"ZERO_DUCKS_GIVEN": int, "YOU_SPIN_ME_ROUND": int,
+                             "SAFETY_FIRST": int, "HOLDING_OUT": int},
+        }
+    """
+    vrows = _sync_read(
+        "SELECT violation_type, COUNT(*) AS cnt FROM violations"
+        " WHERE match_id=? AND team_id=? GROUP BY violation_type",
+        (match_id, team_id),
+    )
+    arows = _sync_read(
+        "SELECT achievement_type, COUNT(*) AS cnt FROM achievements"
+        " WHERE match_id=? AND team_id=? GROUP BY achievement_type",
+        (match_id, team_id),
+    )
+    return {
+        "violations":   {r["violation_type"]: r["cnt"] for r in vrows},
+        "achievements": {r["achievement_type"]: r["cnt"] for r in arows},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Auto-achievement computation  (called at match end from _compute_summaries)
+# ---------------------------------------------------------------------------
+def _compute_auto_achievements(match_id: int, conn: sqlite3.Connection) -> None:
+    """Grant SAFETY_FIRST and HOLDING_OUT awards for all completed fares in *match_id*.
+
+    Must be called with an open, row_factory-enabled connection (already inside
+    _compute_summaries which opens its own connection).
+    """
+    delivered = conn.execute(
+        """SELECT fe.fare_uid, fe.team_id, f.fare_type
+           FROM fare_events fe
+           JOIN fares f USING(fare_uid)
+           WHERE fe.match_id=? AND fe.event_type='DELIVERED'""",
+        (match_id,),
+    ).fetchall()
+
+    now = time.time()
+    for row in delivered:
+        fare_uid  = row["fare_uid"]
+        team_id   = row["team_id"]
+        fare_type = row["fare_type"]
+
+        # --- Safety First: no violations at all during this fare ---------------
+        viol_count = conn.execute(
+            "SELECT COUNT(*) FROM violations WHERE fare_uid=? AND team_id=?",
+            (fare_uid, team_id),
+        ).fetchone()[0]
+        already = conn.execute(
+            "SELECT COUNT(*) FROM achievements"
+            " WHERE match_id=? AND team_id=? AND fare_uid=? AND achievement_type='SAFETY_FIRST'",
+            (match_id, team_id, fare_uid),
+        ).fetchone()[0]
+        if viol_count == 0 and not already:
+            conn.execute(
+                "INSERT INTO achievements(match_id, team_id, fare_uid, achievement_type, granted_by, ts)"
+                " VALUES (?,?,?,?,?,?)",
+                (match_id, team_id, fare_uid, "SAFETY_FIRST", "SYSTEM", now),
+            )
+
+        # --- Holding Out for a Hero: completed a SPECIAL fare ------------------
+        if fare_type == "SPECIAL":
+            already = conn.execute(
+                "SELECT COUNT(*) FROM achievements"
+                " WHERE match_id=? AND team_id=? AND fare_uid=? AND achievement_type='HOLDING_OUT'",
+                (match_id, team_id, fare_uid),
+            ).fetchone()[0]
+            if not already:
+                conn.execute(
+                    "INSERT INTO achievements(match_id, team_id, fare_uid, achievement_type, granted_by, ts)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (match_id, team_id, fare_uid, "HOLDING_OUT", "SYSTEM", now),
+                )
+
+    conn.commit()
+
