@@ -331,7 +331,19 @@ class MapMonitor {
             startCircle.setAttribute('stroke', teamColor);
             startCircle.setAttribute('stroke-width', '2');
             svgLayer.appendChild(startCircle);
-            
+
+            // Pickup tolerance zone — dashed circle, radius = POSITION_TOLERANCE (15 cm)
+            const startTol = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            startTol.setAttribute('cx', srcX);
+            startTol.setAttribute('cy', srcY);
+            startTol.setAttribute('r', '15');
+            startTol.setAttribute('fill', 'none');
+            startTol.setAttribute('stroke', teamColor);
+            startTol.setAttribute('stroke-width', '1');
+            startTol.setAttribute('stroke-opacity', '0.6');
+            startTol.setAttribute('stroke-dasharray', '3,3');
+            svgLayer.appendChild(startTol);
+
             // Create end point (dropoff) — team-color fill, white border
             const endCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
             endCircle.setAttribute('cx', destX);
@@ -341,6 +353,18 @@ class MapMonitor {
             endCircle.setAttribute('stroke', 'white');
             endCircle.setAttribute('stroke-width', '2');
             svgLayer.appendChild(endCircle);
+
+            // Dropoff tolerance zone — dashed circle, radius = POSITION_TOLERANCE (15 cm)
+            const endTol = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            endTol.setAttribute('cx', destX);
+            endTol.setAttribute('cy', destY);
+            endTol.setAttribute('r', '15');
+            endTol.setAttribute('fill', 'none');
+            endTol.setAttribute('stroke', teamColor);
+            endTol.setAttribute('stroke-width', '1');
+            endTol.setAttribute('stroke-opacity', '0.6');
+            endTol.setAttribute('stroke-dasharray', '3,3');
+            svgLayer.appendChild(endTol);
         }
     }
 
