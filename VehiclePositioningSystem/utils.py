@@ -404,11 +404,12 @@ def _ray_ground_pos(
     center_u: np.ndarray,
     cam_k: np.ndarray,
     map_to_cam: np.ndarray,
+    z_plane: float = 0.0,
 ) -> "tuple[float, float] | None":
     """
-    Find the world (x, y) position of a ground-plane tag by casting a ray from
-    the camera through the undistorted pixel centre of the detection and
-    intersecting it with the z = 0 plane.
+    Find the world (x, y) position of a tag by casting a ray from the camera
+    through the undistorted pixel centre of the detection and intersecting it
+    with the horizontal plane z = z_plane.
 
     Why this is more stable than the PnP-derived translation
     ---------------------------------------------------------
@@ -418,18 +419,25 @@ def _ray_ground_pos(
 
     The tag centre pixel (mean of four corners) is significantly more stable
     than any individual corner.  Given the known camera pose (from reference
-    markers) and the physical constraint that the tag lies on z = 0, we can
-    project that single stable pixel onto the ground plane directly, bypassing
-    the noisy depth estimation of PnP entirely.
+    markers) and the known height of the tag plane, we can project that single
+    stable pixel onto that plane directly, bypassing the noisy depth estimation
+    of PnP entirely.
+
+    z_plane should be 0.0 for ground-mounted reference tags, and the PnP-derived
+    world-Z of the tag for mobile tags mounted on vehicles.  Using z=0 for an
+    elevated tag introduces a parallax error proportional to the tag height and
+    the angle from vertical — visually it shifts the marker toward the camera
+    nadir by approximately tag_height * tan(angle_from_vertical).
 
     Args:
         center_u  : (2,) undistorted tag centre in pixel coordinates.
         cam_k     : (3,3) camera intrinsic matrix (same K used in detection).
         map_to_cam: (4,4) map-to-camera transform from compute_camera_pos.
+        z_plane   : world-Z of the tag's horizontal plane in cm (default 0).
 
     Returns:
         (world_x, world_y) in cm, or None if the ray is nearly parallel to
-        the ground plane or the intersection is behind the camera.
+        the plane or the intersection is behind the camera.
     """
     u, v = float(center_u[0]), float(center_u[1])
     fx, fy = float(cam_k[0, 0]), float(cam_k[1, 1])
@@ -444,11 +452,11 @@ def _ray_ground_pos(
     cam_world = -R.T @ t          # camera centre in world coordinates
     d_world   = R.T @ d_cam       # ray direction in world coordinates
 
-    # Intersect with z = 0:  cam_world[2] + s * d_world[2] = 0
+    # Intersect with z = z_plane:  cam_world[2] + s * d_world[2] = z_plane
     dz = float(d_world[2])
     if abs(dz) < 1e-6:
-        return None   # ray nearly parallel to the ground plane
-    s = -float(cam_world[2]) / dz
+        return None   # ray nearly parallel to the plane
+    s = (z_plane - float(cam_world[2])) / dz
     if s < 0:
         return None   # intersection is behind the camera
 
@@ -487,17 +495,26 @@ def compute_tag_poses(detections, cam_pos: ArrayLike) -> Dict[int, Tuple[int, in
         # R transforms world->tag, so tag X in world = first row of R.
         heading = float(np.arctan2(R[0, 1], R[0, 0]))
 
+        # PnP-derived world position (used for z, and as fallback for x/y).
+        pos = -R.T @ t
+
         # Position: use ray-plane intersection when undistorted centre and K
         # are stored in the detection.  This avoids deriving x/y from the
         # noisy PnP rotation and uses the stable averaged pixel centre instead.
+        #
+        # For reference tags the plane is z=0 (they lie on the floor).
+        # For mobile tags the plane is the PnP-derived z — this eliminates the
+        # parallax error that occurs when an elevated tag is projected onto
+        # z=0 from a non-vertical camera angle.
         if det.center_u is not None and det.cam_k is not None:
-            xy = _ray_ground_pos(det.center_u, det.cam_k, cam_pos)
+            is_ref = det.tag_id in tags
+            z_plane = 0.0 if is_ref else float(pos[2])
+            xy = _ray_ground_pos(det.center_u, det.cam_k, cam_pos, z_plane)
             if xy is not None:
-                tag_poses[det.tag_id] = (xy[0], xy[1], 0.0, heading)
+                tag_poses[det.tag_id] = (xy[0], xy[1], z_plane, heading)
                 continue
 
         # Fallback: PnP-derived position (used when cam_k is not stored).
-        pos = -R.T @ t
         tag_poses[det.tag_id] = (float(pos[0]), float(pos[1]), float(pos[2]), heading)
 
     return tag_poses
