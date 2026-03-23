@@ -48,6 +48,11 @@ class Defaults:
         "/dev/brio-camera3"
     ]
     TAG_SIZE = 10  # 10 cm  (all coordinates in this codebase are in centimetres)
+    # Height of mobile (robot-mounted) ArUco tags above the ground plane, in cm.
+    # All mobile tags are assumed to be at the same height.
+    # Used to correct parallax when projecting the pixel centre onto the tag plane.
+    # Set this to the actual measured height of your tags above the floor.
+    MOBILE_TAG_HEIGHT = 13.0  # cm  <-- adjust to match your robot tag height
 
 
 # Adapter to match utils.compute_camera_pos expected detection interface
@@ -495,7 +500,7 @@ def compute_tag_poses(detections, cam_pos: ArrayLike) -> Dict[int, Tuple[int, in
         # R transforms world->tag, so tag X in world = first row of R.
         heading = float(np.arctan2(R[0, 1], R[0, 0]))
 
-        # PnP-derived world position (used for z, and as fallback for x/y).
+        # PnP-derived world position (used for heading and as fallback for x/y).
         pos = -R.T @ t
 
         # Position: use ray-plane intersection when undistorted centre and K
@@ -503,12 +508,14 @@ def compute_tag_poses(detections, cam_pos: ArrayLike) -> Dict[int, Tuple[int, in
         # noisy PnP rotation and uses the stable averaged pixel centre instead.
         #
         # For reference tags the plane is z=0 (they lie on the floor).
-        # For mobile tags the plane is the PnP-derived z — this eliminates the
-        # parallax error that occurs when an elevated tag is projected onto
-        # z=0 from a non-vertical camera angle.
+        # For mobile tags we use the configured MOBILE_TAG_HEIGHT — a fixed known
+        # constant — rather than the noisy PnP z.  Using z=0 for an elevated tag
+        # introduces a parallax error in x,y that grows with distance from camera
+        # nadir (~h*d/(H-h)).  Using a fixed constant eliminates that error without
+        # adding PnP z-noise back into the x,y estimate.
         if det.center_u is not None and det.cam_k is not None:
             is_ref = det.tag_id in tags
-            z_plane = 0.0 if is_ref else float(pos[2])
+            z_plane = 0.0 if is_ref else Defaults.MOBILE_TAG_HEIGHT
             xy = _ray_ground_pos(det.center_u, det.cam_k, cam_pos, z_plane)
             if xy is not None:
                 tag_poses[det.tag_id] = (xy[0], xy[1], z_plane, heading)
