@@ -66,6 +66,9 @@ class MapMonitor {
             this.fetchFares();
             this.fetchTeamData();
             this.fetchMatchState();
+            // Re-apply duck positions from cached data so they always reflect
+            // the current MAP_WIDTH_CM / MAP_HEIGHT_CM / shift constants.
+            this.positionAllDucks();
         }, 2000);
         
         // Start countdown timer update (every second)
