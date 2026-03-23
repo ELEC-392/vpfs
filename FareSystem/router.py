@@ -989,6 +989,9 @@ _recording_enabled = True
 # Whether fare route lines are shown on the map dashboard
 _fare_lines_visible = True
 
+# Whether spawn points are shown on the map dashboard
+_spawn_points_visible = False
+
 @app.route("/api/settings/recording", methods=["GET"])
 def get_recording_setting():
     """Public endpoint — returns whether database recording is enabled."""
@@ -1012,6 +1015,25 @@ def get_fare_lines_setting():
     """Public endpoint — returns whether fare route lines should be shown."""
     return jsonify({"visible": _fare_lines_visible})
 
+@app.route("/api/settings/spawn-points", methods=["GET"])
+def get_spawn_points_setting():
+    """Public endpoint — returns spawn point visibility flag and point data."""
+    config_path = Path(__file__).resolve().parents[1] / "Config" / "spawn_points.yaml"
+    points = []
+    if _spawn_points_visible and config_path.exists():
+        with config_path.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        for sp in data.get("spawn_points", []):
+            coords = sp.get("coordinates", {})
+            points.append({
+                "id":     sp.get("id"),
+                "name":   sp.get("name", "?"),
+                "x":      float(coords.get("x", 0)),
+                "y":      float(coords.get("y", 0)),
+                "active": bool(sp.get("active", True)),
+            })
+    return jsonify({"visible": _spawn_points_visible, "spawnPoints": points})
+
 @app.route("/api/admin/fare-lines", methods=["POST"])
 @require_admin
 def set_fare_lines_setting():
@@ -1020,6 +1042,15 @@ def set_fare_lines_setting():
     data = request.get_json()
     _fare_lines_visible = bool(data.get("visible", True))
     return jsonify({"success": True, "visible": _fare_lines_visible})
+
+@app.route("/api/admin/spawn-points-visible", methods=["POST"])
+@require_admin
+def set_spawn_points_visible():
+    """Toggle spawn point visibility on the map dashboard."""
+    global _spawn_points_visible
+    data = request.get_json()
+    _spawn_points_visible = bool(data.get("visible", False))
+    return jsonify({"success": True, "visible": _spawn_points_visible})
 
 @app.route("/api/admin/spawn-points")
 @require_admin

@@ -140,9 +140,10 @@ class MapMonitor {
     
     async fetchFares() {
         try {
-            const [faresResp, settingResp] = await Promise.all([
+            const [faresResp, settingResp, spawnResp] = await Promise.all([
                 fetch('/fares'),
-                fetch('/api/settings/fare-lines')
+                fetch('/api/settings/fare-lines'),
+                fetch('/api/settings/spawn-points')
             ]);
             if (faresResp.ok) {
                 this.fares = await faresResp.json();
@@ -158,6 +159,14 @@ class MapMonitor {
                     this.clearFareRoutes();
                 }
                 this.updateStats();
+            }
+            if (spawnResp.ok) {
+                const spawnData = await spawnResp.json();
+                if (spawnData.visible && spawnData.spawnPoints && spawnData.spawnPoints.length) {
+                    this.renderSpawnPoints(spawnData.spawnPoints);
+                } else {
+                    this.clearSpawnPoints();
+                }
             }
         } catch (error) {
             console.error('Error fetching fares:', error);
@@ -262,15 +271,85 @@ class MapMonitor {
 
     clearFareRoutes() {
         const svgLayer = document.getElementById('fare-routes-layer');
-        if (svgLayer) svgLayer.innerHTML = '';
+        if (svgLayer) {
+            // Clear everything except the spawn-points group
+            Array.from(svgLayer.childNodes).forEach(n => {
+                if (n.id !== 'spawn-points-layer') n.remove();
+            });
+        }
+    }
+
+    clearSpawnPoints() {
+        const g = document.getElementById('spawn-points-layer');
+        if (g) g.innerHTML = '';
+    }
+
+    renderSpawnPoints(points) {
+        const svgLayer = document.getElementById('fare-routes-layer');
+        const g        = document.getElementById('spawn-points-layer');
+        if (!svgLayer || !g) return;
+
+        // Make sure the SVG viewBox is set (it may not be if no fares are active)
+        if (!svgLayer.getAttribute('viewBox')) {
+            svgLayer.setAttribute('viewBox', `0 0 ${this.MAP_WIDTH_CM} ${this.MAP_HEIGHT_CM}`);
+            svgLayer.setAttribute('preserveAspectRatio', 'none');
+        }
+
+        g.innerHTML = '';
+
+        const NS = 'http://www.w3.org/2000/svg';
+
+        for (const pt of points) {
+            // Apply the same Y-flip and shift as fare routes
+            const cx = pt.x + this.X_SHIFT_CM;
+            const cy = this.MAP_HEIGHT_CM - (pt.y + this.Y_SHIFT_CM);
+
+            const color  = pt.active ? '#16a34a' : '#94a3b8';
+            const radius = 5;
+
+            // Outer ring (subtle halo)
+            const halo = document.createElementNS(NS, 'circle');
+            halo.setAttribute('cx', cx);
+            halo.setAttribute('cy', cy);
+            halo.setAttribute('r', radius + 4);
+            halo.setAttribute('fill', color);
+            halo.setAttribute('fill-opacity', '0.18');
+            g.appendChild(halo);
+
+            // Filled dot
+            const dot = document.createElementNS(NS, 'circle');
+            dot.setAttribute('cx', cx);
+            dot.setAttribute('cy', cy);
+            dot.setAttribute('r', radius);
+            dot.setAttribute('fill', color);
+            dot.setAttribute('stroke', 'white');
+            dot.setAttribute('stroke-width', '1.5');
+            g.appendChild(dot);
+
+            // Label
+            const label = document.createElementNS(NS, 'text');
+            label.setAttribute('x', cx);
+            label.setAttribute('y', cy - radius - 3);
+            label.setAttribute('text-anchor', 'middle');
+            label.setAttribute('font-size', '9');
+            label.setAttribute('font-weight', 'bold');
+            label.setAttribute('fill', color);
+            label.setAttribute('stroke', 'white');
+            label.setAttribute('stroke-width', '2.5');
+            label.setAttribute('paint-order', 'stroke');
+            label.textContent = pt.name;
+            g.appendChild(label);
+        }
     }
     
     renderFareRoutes() {
         const svgLayer = document.getElementById('fare-routes-layer');
         if (!svgLayer) return;
         
-        // Clear existing routes
-        svgLayer.innerHTML = '';
+        // Clear existing routes but preserve the spawn-points group
+        Array.from(svgLayer.childNodes).forEach(n => {
+            if (n.id !== 'spawn-points-layer') n.remove();
+        });
         
         // Set viewBox to match physical map dimensions for direct cm coordinates
         svgLayer.setAttribute('viewBox', `0 0 ${this.MAP_WIDTH_CM} ${this.MAP_HEIGHT_CM}`);

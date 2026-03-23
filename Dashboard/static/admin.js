@@ -107,6 +107,7 @@ class AdminPanel {
             } else {
                 panel.style.display = 'none';
             }
+            this.setSpawnPointsVisible(e.target.checked);
         });
 
         // Spawn points canvas tooltip
@@ -488,6 +489,24 @@ class AdminPanel {
             console.error('Error setting fare lines visibility:', error);
             this.showMatchStatus('Network error', 'error');
             document.getElementById('fare-lines-toggle').checked = !visible;
+        }
+    }
+
+    async setSpawnPointsVisible(visible) {
+        try {
+            const response = await fetch('/api/admin/spawn-points-visible', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ visible })
+            });
+            if (!response.ok) {
+                this.showMatchStatus('Error updating spawn points setting', 'error');
+                document.getElementById('spawn-points-toggle').checked = !visible;
+            }
+        } catch (error) {
+            console.error('Error setting spawn points visibility:', error);
+            this.showMatchStatus('Network error', 'error');
+            document.getElementById('spawn-points-toggle').checked = !visible;
         }
     }
 
