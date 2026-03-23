@@ -778,10 +778,12 @@ def compute_world_positions(detections_by_camera):
 
             # Use ray-plane intersection for position when available.
             if det.center_u is not None and det.cam_k is not None:
-                xy = _ray_ground_pos(det.center_u, det.cam_k, map_to_cam)
+                is_ref = int(det.tag_id) in ref_tags
+                z_plane = 0.0 if is_ref else Defaults.MOBILE_TAG_HEIGHT
+                xy = _ray_ground_pos(det.center_u, det.cam_k, map_to_cam, z_plane)
                 if xy is not None:
                     all_observations.setdefault(int(det.tag_id), []).append(
-                        (xy[0], xy[1], 0.0, heading))
+                        (xy[0], xy[1], z_plane, heading))
                     continue
 
             # Fallback: PnP-derived position.
