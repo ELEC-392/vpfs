@@ -24,7 +24,7 @@ import fms
 from jsonschema import validate
 from threading import Thread
 from auth import authenticate
-from params import MODE, OperatingMode, VIOLATION_STANDARD, VIOLATION_SEVERE
+from params import MODE, OperatingMode, VIOLATION_STANDARD, VIOLATION_SEVERE, VIOLATION_STANDARD_FINE, VIOLATION_SEVERE_FINE
 from team import Team
 
 # fms.py already inserts Databases/ into sys.path, so recorder is importable here.
@@ -371,7 +371,8 @@ def api_referee_violation(team_id):
     if delta not in (1, -1):
         return jsonify({"success": False, "message": "delta must be 1 or -1"}), 400
 
-    penalty = VIOLATION_STANDARD if vtype == "STANDARD" else VIOLATION_SEVERE
+    penalty      = VIOLATION_STANDARD      if vtype == "STANDARD" else VIOLATION_SEVERE
+    cash_penalty = VIOLATION_STANDARD_FINE if vtype == "STANDARD" else VIOLATION_SEVERE_FINE
     referee_id = session["referee_id"]
 
     with fms.mutex:
@@ -390,6 +391,7 @@ def api_referee_violation(team_id):
 
         if delta == 1:
             team.karma = max(-100, min(100, team.karma - penalty))
+            team.money -= cash_penalty
             team.standard_violations += (1 if vtype == "STANDARD" else 0)
             team.severe_violations   += (1 if vtype == "SEVERE"   else 0)
             if fare_obj is not None:  # also track on the fare for Safety First
@@ -397,7 +399,7 @@ def api_referee_violation(team_id):
                     fare_obj.standard_violations += 1
                 else:
                     fare_obj.severe_violations += 1
-        else:  # undo — karma always restored; decrement counters if positive
+        else:  # undo — karma and cash always restored; decrement counters if positive
             if vtype == "STANDARD" and team.standard_violations > 0:
                 team.standard_violations -= 1
             elif vtype == "SEVERE" and team.severe_violations > 0:
@@ -408,6 +410,7 @@ def api_referee_violation(team_id):
                 elif vtype == "SEVERE" and fare_obj.severe_violations > 0:
                     fare_obj.severe_violations -= 1
             team.karma = max(-100, min(100, team.karma + penalty))
+            team.money += cash_penalty
 
         violations_resp = {
             "STANDARD": team.standard_violations,
