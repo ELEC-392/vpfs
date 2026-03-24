@@ -140,19 +140,32 @@
                         </div>
                     </div>
 
-        <!-- Ranking Filter Toggle -->
-        <div class="auto-register-toggle" style="margin-top:16px;">
-            <div class="toggle-row">
-                <div>
-                    <div class="toggle-title">Ranking: completed fares only</div>
-                    <div class="toggle-hint">Show only teams with at least one completed fare. Disable to show all registered teams.</div>
-                </div>
-                <label class="toggle-switch">
-                    <input type="checkbox" id="ranking-completed-only-toggle" checked>
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-        </div>
+                    <!-- Spawn Points Visualization -->
+                    <div id="spawn-points-panel" class="spawn-points-panel" style="display:none;">
+                        <div class="spawn-points-info" id="spawn-points-info"></div>
+                        <div class="spawn-canvas-wrap">
+                            <canvas id="spawn-points-canvas"></canvas>
+                            <div class="spawn-tooltip" id="spawn-tooltip"></div>
+                        </div>
+                    </div>
+
+                    <!-- Ranking Filter Toggle -->
+                    <div class="auto-register-toggle" style="margin-top:16px;">
+                        <div class="toggle-row">
+                            <div>
+                                <div class="toggle-title">Ranking: completed fares only</div>
+                                <div class="toggle-hint">Show only teams with at least one completed fare. Disable to show all registered teams.</div>
+                            </div>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="ranking-completed-only-toggle" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="match-state-display">
+                        <div class="stat-item">
+                            <span>Match:</span>
                             <span id="current-match-num">—</span>
                         </div>
                         <div class="stat-item">
