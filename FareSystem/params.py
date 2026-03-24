@@ -8,7 +8,7 @@ class OperatingMode(str, Enum):
 
 MODE = OperatingMode.MATCH
 
-POSITION_TOLERANCE = 15
+POSITION_TOLERANCE = 20
 PICKUP_DURATION = 5
 
 BASE_FARE: Final[float] = 10.0
