@@ -98,6 +98,11 @@ class AdminPanel {
             this.setFareLinesVisible(e.target.checked);
         });
 
+        // Ranking filter toggle
+        document.getElementById('ranking-completed-only-toggle').addEventListener('change', (e) => {
+            this.setRankingCompletedOnly(e.target.checked);
+        });
+
         // Spawn points toggle
         document.getElementById('spawn-points-toggle').addEventListener('change', (e) => {
             const panel = document.getElementById('spawn-points-panel');
@@ -489,6 +494,24 @@ class AdminPanel {
             console.error('Error setting fare lines visibility:', error);
             this.showMatchStatus('Network error', 'error');
             document.getElementById('fare-lines-toggle').checked = !visible;
+        }
+    }
+
+    async setRankingCompletedOnly(enabled) {
+        try {
+            const response = await fetch('/api/admin/ranking-completed-only', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled })
+            });
+            if (!response.ok) {
+                this.showMatchStatus('Error updating ranking setting', 'error');
+                document.getElementById('ranking-completed-only-toggle').checked = !enabled;
+            }
+        } catch (error) {
+            console.error('Error setting ranking filter:', error);
+            this.showMatchStatus('Network error', 'error');
+            document.getElementById('ranking-completed-only-toggle').checked = !enabled;
         }
     }
 

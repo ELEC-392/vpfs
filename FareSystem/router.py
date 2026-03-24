@@ -995,6 +995,9 @@ _fare_lines_visible = True
 # Whether spawn points are shown on the map dashboard
 _spawn_points_visible = False
 
+# Whether ranking only shows teams with completed fares (True) or all teams (False)
+_ranking_completed_only = True
+
 @app.route("/api/settings/recording", methods=["GET"])
 def get_recording_setting():
     """Public endpoint — returns whether database recording is enabled."""
@@ -1054,6 +1057,15 @@ def set_spawn_points_visible():
     data = request.get_json()
     _spawn_points_visible = bool(data.get("visible", False))
     return jsonify({"success": True, "visible": _spawn_points_visible})
+
+@app.route("/api/admin/ranking-completed-only", methods=["POST"])
+@require_admin
+def set_ranking_completed_only():
+    """Toggle whether ranking shows only teams with completed fares or all teams."""
+    global _ranking_completed_only
+    data = request.get_json()
+    _ranking_completed_only = bool(data.get("enabled", True))
+    return jsonify({"success": True, "enabled": _ranking_completed_only})
 
 @app.route("/api/admin/spawn-points")
 @require_admin
@@ -1249,33 +1261,59 @@ def serve_ranking():
         cur = con.cursor()
 
         # Aggregate across all matches: sum money earned, karma from their most recent match.
-        # Only include teams with at least one completed fare.
-        cur.execute("""
-            SELECT
-                t.team_id,
-                t.name,
-                SUM(s.fares_completed)  AS fares_completed,
-                (
-                    SELECT money_end
-                    FROM match_team_summary
-                    WHERE team_id = t.team_id
-                      AND money_end IS NOT NULL
-                    ORDER BY match_id DESC
-                    LIMIT 1
-                )                       AS total_money,
-                (
-                    SELECT karma_end
-                    FROM match_team_summary
-                    WHERE team_id = t.team_id
-                    ORDER BY match_id DESC
-                    LIMIT 1
-                )                       AS final_rep
-            FROM match_team_summary s
-            JOIN teams t USING(team_id)
-            WHERE s.fares_completed > 0
-            GROUP BY t.team_id, t.name
-            ORDER BY total_money DESC
-        """)
+        if _ranking_completed_only:
+            cur.execute("""
+                SELECT
+                    t.team_id,
+                    t.name,
+                    SUM(s.fares_completed)  AS fares_completed,
+                    (
+                        SELECT money_end
+                        FROM match_team_summary
+                        WHERE team_id = t.team_id
+                          AND money_end IS NOT NULL
+                        ORDER BY match_id DESC
+                        LIMIT 1
+                    )                       AS total_money,
+                    (
+                        SELECT karma_end
+                        FROM match_team_summary
+                        WHERE team_id = t.team_id
+                        ORDER BY match_id DESC
+                        LIMIT 1
+                    )                       AS final_rep
+                FROM match_team_summary s
+                JOIN teams t USING(team_id)
+                WHERE s.fares_completed > 0
+                GROUP BY t.team_id, t.name
+                ORDER BY total_money DESC
+            """)
+        else:
+            cur.execute("""
+                SELECT
+                    t.team_id,
+                    t.name,
+                    COALESCE(SUM(s.fares_completed), 0) AS fares_completed,
+                    (
+                        SELECT money_end
+                        FROM match_team_summary
+                        WHERE team_id = t.team_id
+                          AND money_end IS NOT NULL
+                        ORDER BY match_id DESC
+                        LIMIT 1
+                    )                       AS total_money,
+                    (
+                        SELECT karma_end
+                        FROM match_team_summary
+                        WHERE team_id = t.team_id
+                        ORDER BY match_id DESC
+                        LIMIT 1
+                    )                       AS final_rep
+                FROM teams t
+                LEFT JOIN match_team_summary s USING(team_id)
+                GROUP BY t.team_id, t.name
+                ORDER BY total_money DESC
+            """)
         rows = [dict(r) for r in cur.fetchall()]
         con.close()
     except Exception as e:
@@ -1296,6 +1334,8 @@ def serve_ranking():
     rep_rank   = {r['team_id']: i / (n - 1) if n > 1 else 0.5 for i, r in enumerate(by_rep_sorted)}
 
     for r in rows:
+        r['total_money'] = r['total_money'] or 0
+        r['final_rep']   = r['final_rep']   or 0
         tid = r['team_id']
         r['cs']        = 0.5 * money_rank[tid] + 0.5 * rep_rank[tid]
         r['cs_pct']    = round(r['cs'] * 100)
