@@ -1255,7 +1255,14 @@ def serve_ranking():
                 t.team_id,
                 t.name,
                 SUM(s.fares_completed)  AS fares_completed,
-                SUM(s.money_earned)     AS total_money,
+                (
+                    SELECT money_end
+                    FROM match_team_summary
+                    WHERE team_id = t.team_id
+                      AND money_end IS NOT NULL
+                    ORDER BY match_id DESC
+                    LIMIT 1
+                )                       AS total_money,
                 (
                     SELECT karma_end
                     FROM match_team_summary
