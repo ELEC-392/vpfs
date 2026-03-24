@@ -1089,15 +1089,21 @@ def api_admin_spawn_points():
 @app.route("/api/admin/match/reset", methods=["POST"])
 @require_admin
 def admin_reset_match():
-    """Stop the match and re-apply the same configuration, ready to start again."""
+    """Stop the match and advance to the next match number, ready to start again.
+
+    All recorded data from the previous run is preserved under its original
+    match_id.  The match number is incremented so the new run gets a fresh
+    identity and no data ever mixes between runs.
+    """
     try:
         with fms.mutex:
             num      = fms.matchNum
             duration = fms.matchDuration
             seed     = fms.matchSeed
         fms.cancel_match()
-        fms.config_match(num, duration, seed)
-        return jsonify({"success": True, "message": f"Match {num} reset ({duration}s, seed={seed})"})
+        new_num = num + 1
+        fms.config_match(new_num, duration, seed)
+        return jsonify({"success": True, "message": f"Match reset — now configured as match {new_num} ({duration}s, seed={seed})"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 400
 

@@ -288,11 +288,17 @@ def cancel_match():
     """
     global matchEndTime, matchRunning, matchPaused, matchTimeRemain, fares
     with mutex:
-        if _HAS_RECORDER and (matchRunning or matchPaused):
+        # Only record a match end here when the match was actively running or
+        # was paused mid-match (matchTimeRemain > 0).  When the timer has already
+        # expired (matchPaused=True AND matchTimeRemain==0), pause_match() already
+        # called record_match_end at that moment — calling it again would spawn a
+        # second summary thread and potentially overwrite ended_at.
+        if _HAS_RECORDER and (matchRunning or (matchPaused and matchTimeRemain > 0)):
             recorder.record_match_end(matchNum, time.time(), teams)
         matchEndTime    = 0
         matchRunning    = False
         matchPaused     = False
         matchTimeRemain = 0
         fares           = []
+        teams.clear()
         spin_round_awarded.clear()

@@ -306,9 +306,19 @@ def stop() -> None:
 # Match recording
 # ---------------------------------------------------------------------------
 def record_match(match_id: int, seed: int, duration_s: int) -> None:
-    """Call when a match is configured (fms.config_match)."""
+    """Call when a match is configured (fms.config_match).
+
+    Uses ON CONFLICT DO UPDATE so that re-configuring an existing match number
+    (e.g. after a Reset) only updates seed/duration and never wipes the
+    started_at / ended_at timestamps that were already recorded.
+    """
     _enqueue(
-        "INSERT OR REPLACE INTO matches(match_id, seed, duration_s) VALUES (?,?,?)",
+        """
+        INSERT INTO matches(match_id, seed, duration_s) VALUES (?,?,?)
+        ON CONFLICT(match_id) DO UPDATE SET
+            seed=excluded.seed,
+            duration_s=excluded.duration_s
+        """,
         (match_id, seed, duration_s),
     )
 
@@ -350,9 +360,14 @@ def record_match_end(match_id: int, ended_at: float, teams: dict) -> None:
     # Snapshot final state; compute summaries in a separate thread so the
     # writer queue has time to flush all remaining events first.
     end_snapshot = {tid: (t.money, t.karma) for tid, t in teams.items()}
+    # Snapshot start money/karma NOW (before any new match could clear the
+    # module-level dicts in record_match_start) so the summary thread has a
+    # stable copy even if a new match begins within the 2-second sleep window.
+    start_money = dict(_match_start_money)
+    start_karma = dict(_match_start_karma)
     threading.Thread(
         target=_compute_summaries,
-        args=(match_id, end_snapshot),
+        args=(match_id, end_snapshot, start_money, start_karma),
         daemon=True,
         name="db-summaries",
     ).start()
@@ -449,7 +464,12 @@ def record_position(
 # ---------------------------------------------------------------------------
 # Summary computation  (runs in a background thread ~2 s after match end)
 # ---------------------------------------------------------------------------
-def _compute_summaries(match_id: int, end_snapshot: dict) -> None:
+def _compute_summaries(
+    match_id: int,
+    end_snapshot: dict,
+    start_money: dict,
+    start_karma: dict,
+) -> None:
     time.sleep(2)   # give the writer thread time to flush remaining events
     try:
         conn = sqlite3.connect(str(_db_path))
@@ -465,7 +485,7 @@ def _compute_summaries(match_id: int, end_snapshot: dict) -> None:
         ]
 
         for team_id in team_ids:
-            _write_team_summary(conn, match_id, team_id, end_snapshot)
+            _write_team_summary(conn, match_id, team_id, end_snapshot, start_money, start_karma)
 
         # Note: auto-achievements (SAFETY_FIRST, HOLDING_OUT) are now recorded
         # live inside fare.pay_fare() — no batch computation needed here.
@@ -480,6 +500,8 @@ def _write_team_summary(
     match_id: int,
     team_id: int,
     end_snapshot: dict,
+    start_money: dict,
+    start_karma: dict,
 ) -> None:
     # -- Fare counts ----------------------------------------------------------
     counts_raw = conn.execute(
@@ -527,8 +549,8 @@ def _write_team_summary(
         return sum(lst) / len(lst) if lst else None
 
     # -- Money / karma --------------------------------------------------------
-    money_start = _match_start_money.get(team_id)
-    karma_start = _match_start_karma.get(team_id)
+    money_start = start_money.get(team_id)
+    karma_start = start_karma.get(team_id)
     money_end, karma_end = end_snapshot.get(team_id, (None, None))
     money_earned = (
         money_end - money_start
