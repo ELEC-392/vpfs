@@ -1323,6 +1323,11 @@ def serve_ranking():
     if not rows:
         return render_template('ranking.html', by_cs=[], by_money=[], by_rep=[])
 
+    # Default NULL money/rep (teams with no match data) to 0 before any sorting/ranking.
+    for r in rows:
+        r['total_money'] = r['total_money'] or 0
+        r['final_rep']   = r['final_rep']   or 0
+
     n = len(rows)
 
     # Assign rank-normalised scores (0 = last, 1 = first) for money and rep separately.
@@ -1334,8 +1339,6 @@ def serve_ranking():
     rep_rank   = {r['team_id']: i / (n - 1) if n > 1 else 0.5 for i, r in enumerate(by_rep_sorted)}
 
     for r in rows:
-        r['total_money'] = r['total_money'] or 0
-        r['final_rep']   = r['final_rep']   or 0
         tid = r['team_id']
         r['cs']        = 0.5 * money_rank[tid] + 0.5 * rep_rank[tid]
         r['cs_pct']    = round(r['cs'] * 100)
