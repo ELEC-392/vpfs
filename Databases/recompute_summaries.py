@@ -34,7 +34,14 @@ def _avg(lst: list) -> "float | None":
 
 
 def _last_money_karma(conn: sqlite3.Connection, match_id: int, team_id: int):
-    """Return (money_end, karma_end) from the latest event that has those fields."""
+    """Return (money_end, karma_end) for a team at the end of a match.
+
+    Strategy (in order):
+    1. Latest fare_event with money_after set (written for PAID / DROPPED events).
+    2. Existing match_team_summary row — recorder.py writes this from the live
+       in-process snapshot at match end and will have correct values for teams
+       whose last action was mid-fare (no PAID/DROPPED ever recorded for them).
+    """
     row = conn.execute(
         """SELECT money_after, karma_after
            FROM fare_events
@@ -46,6 +53,16 @@ def _last_money_karma(conn: sqlite3.Connection, match_id: int, team_id: int):
     ).fetchone()
     if row:
         return row["money_after"], row["karma_after"]
+
+    # Fallback: existing summary row (captured live by recorder.py at match end).
+    row = conn.execute(
+        "SELECT money_end, karma_end FROM match_team_summary"
+        " WHERE match_id=? AND team_id=?",
+        (match_id, team_id),
+    ).fetchone()
+    if row and row["money_end"] is not None:
+        return row["money_end"], row["karma_end"]
+
     return None, None
 
 

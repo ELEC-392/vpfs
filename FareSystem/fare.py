@@ -72,6 +72,8 @@ class Fare:
         self.achievements: set[str] = set()  # manual achievements granted by referees
         # Teams that dropped this fare (any drop = manual intervention = disqualifies Look Ma!)
         self.dropped_teams: set[int] = set()
+        # Guard so EXPIRED_CLAIMED is emitted at most once per fare.
+        self._expired_claimed_sent: bool = False
 
     def compute_fare(self) -> float:
         """
@@ -229,6 +231,13 @@ class Fare:
             return
 
         team = teams[self.team]
+
+        # Emit EXPIRED_CLAIMED once when the fare clock runs out while still held.
+        if not self._expired_claimed_sent and time.time() > self.expiry:
+            self._expired_claimed_sent = True
+            _rec_event(self.unique_id, "EXPIRED_CLAIMED", team_id=self.team,
+                       team_x=team.pos.x, team_y=team.pos.y,
+                       money_after=team.money, karma_after=team.karma)
 
         # Set inactive if the team takes another fare
         if not team.currentFare == number:
