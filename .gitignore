@@ -9,6 +9,7 @@ __pycache__/
 # *.png
 calibration_images/
 competition*
+*.csv
 
 # Credentials (contain auth secrets)
 Config/teams.yaml
